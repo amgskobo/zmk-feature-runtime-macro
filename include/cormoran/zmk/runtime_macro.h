@@ -72,13 +72,12 @@ int zmk_runtime_macro_write(const char *name, const uint8_t *encoded, size_t enc
 int zmk_runtime_macro_read(const char *name, uint8_t *encoded, size_t encoded_capacity,
                            size_t *encoded_size);
 
-/* Rename a macro: creates a new entry under `new_name` with the current
- * body and deletes the old one. Returns -ENOENT if `old_name` has no live
- * macro, -EEXIST if `new_name` is already taken, and leaves the old entry
- * untouched if the create half fails (so a rename never loses data). The
- * macro's slot index is NOT preserved by a rename (the new entry claims
- * whatever slot is free, which is very likely, but not guaranteed to be,
- * the same slot the old entry occupied). */
+/* Rename a macro in place, in one write: it keeps its slot (so keymap
+ * bindings to it keep working), storage record and body. Returns -ENOENT if
+ * `old_name` has no live macro, -EEXIST if `new_name` is already taken
+ * (including `new_name` == `old_name`), -ENAMETOOLONG / -EINVAL for a too
+ * long or empty `new_name`, -ENOSPC if the pool cannot hold a longer name;
+ * on failure the macro is unchanged. */
 int zmk_runtime_macro_rename(const char *old_name, const char *new_name,
                              enum zmk_custom_setting_write_mode mode);
 

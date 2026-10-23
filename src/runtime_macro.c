@@ -734,31 +734,22 @@ int zmk_runtime_macro_read(const char *name, uint8_t *encoded, size_t encoded_ca
 
 int zmk_runtime_macro_rename(const char *old_name, const char *new_name,
                              enum zmk_custom_setting_write_mode mode) {
+    if (!new_name || new_name[0] == '\0') {
+        return -EINVAL;
+    }
+
     char old_key[RUNTIME_MACRO_MAX_KEY_LEN];
+    char new_key[RUNTIME_MACRO_MAX_KEY_LEN];
     int ret = build_key(old_name, old_key, sizeof(old_key));
+    if (ret == 0) {
+        ret = build_key(new_name, new_key, sizeof(new_key));
+    }
     if (ret < 0) {
         return ret;
     }
 
-    const struct zmk_custom_setting *existing =
-        zmk_custom_setting_keyspace_find(&runtime_macros, old_key);
-    if (!existing) {
-        return -ENOENT;
-    }
-
-    uint8_t encoded[CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES];
-    size_t encoded_size = 0;
-    ret = zmk_custom_setting_read_into(existing, encoded, sizeof(encoded), &encoded_size, NULL);
-    if (ret < 0) {
-        return ret;
-    }
-
-    ret = zmk_runtime_macro_create(new_name, encoded, encoded_size, mode, NULL);
-    if (ret < 0) {
-        return ret;
-    }
-
-    return zmk_custom_setting_keyspace_delete(&runtime_macros, old_key);
+    /* In place, so the slot (the keymap's &rmacro parameter) is kept. */
+    return zmk_custom_setting_keyspace_rename(&runtime_macros, old_key, new_key, mode);
 }
 
 int zmk_runtime_macro_name_for_slot(uint32_t slot, char *name, size_t name_capacity) {
