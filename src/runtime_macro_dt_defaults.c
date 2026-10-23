@@ -27,15 +27,26 @@
 #include <zmk/behavior.h>
 #include <zmk/keymap.h>
 
+#include "runtime_macro_codec.h"
+
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #if DT_HAS_COMPAT_STATUS_OKAY(DT_DRV_COMPAT)
 
-#define RUNTIME_MACRO_DEFAULT_ASSERT_HAS_CONTENT(n)                                                \
-    BUILD_ASSERT(DT_NODE_HAS_PROP(n, text) || DT_NODE_HAS_PROP(n, bindings),                       \
-                 "cormoran,runtime-macro-default node must set `text` and/or `bindings`");
+#define RUNTIME_MACRO_DEFAULT_NAME(n) DT_PROP_OR(n, macro_name, DT_NODE_FULL_NAME(n))
 
-DT_FOREACH_STATUS_OKAY(cormoran_runtime_macro_default, RUNTIME_MACRO_DEFAULT_ASSERT_HAS_CONTENT)
+#define RUNTIME_MACRO_DEFAULT_VALIDATE(n)                                                          \
+    BUILD_ASSERT(DT_NODE_HAS_PROP(n, text) || DT_NODE_HAS_PROP(n, bindings),                       \
+                 "cormoran,runtime-macro-default node must set `text` and/or `bindings`");         \
+    BUILD_ASSERT(sizeof(RUNTIME_MACRO_DEFAULT_NAME(n)) > 1 &&                                      \
+                     sizeof(RUNTIME_MACRO_DEFAULT_NAME(n)) - 1 <=                                  \
+                         CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN,                                    \
+                 "cormoran,runtime-macro-default name must be 1 to "                               \
+                 "CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN bytes");                                   \
+    BUILD_ASSERT(DT_PROP_OR(n, wait_ms, 0) <= ZMK_RUNTIME_MACRO_DELAY_MS_MAX,                      \
+                 "cormoran,runtime-macro-default wait-ms exceeds ZMK_RUNTIME_MACRO_DELAY_MS_MAX");
+
+DT_FOREACH_STATUS_OKAY(cormoran_runtime_macro_default, RUNTIME_MACRO_DEFAULT_VALIDATE)
 
 /* &macro_tap / &macro_press / &macro_release / &macro_wait_time and &kp are singleton control
  * behaviors from ZMK's behaviors.dtsi. Resolve their device names once, guarded so this file still
@@ -88,7 +99,7 @@ struct runtime_macro_default_config {
 #define RUNTIME_MACRO_DEFAULT_INST(n)                                                              \
     RUNTIME_MACRO_DEFAULT_BINDINGS_ARRAY(n)                                                        \
     static const struct runtime_macro_default_config runtime_macro_default_config_##n = {          \
-        .name = DT_PROP_OR(n, macro_name, DT_NODE_FULL_NAME(n)),                                   \
+        .name = RUNTIME_MACRO_DEFAULT_NAME(n),                                                     \
         .text = DT_PROP_OR(n, text, NULL),                                                         \
         .wait_ms = DT_PROP_OR(n, wait_ms, 0),                                                      \
         .bindings = COND_CODE_1(DT_NODE_HAS_PROP(n, bindings),                                     \
@@ -115,7 +126,8 @@ struct runtime_macro_encode_state {
     uint8_t *buf;
     size_t capacity;
     size_t size;
-    uint8_t pending_packed[CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES];
+    /* Packable taps waiting to become one KEY_TAP_SEQUENCE step. */
+    uint8_t pending_packed[ZMK_RUNTIME_MACRO_KEY_TAP_SEQUENCE_MAX_KEYS];
     size_t pending_packed_count;
 };
 
@@ -128,15 +140,7 @@ static int emit_byte(struct runtime_macro_encode_state *s, uint8_t byte) {
 }
 
 static int emit_uvar(struct runtime_macro_encode_state *s, uint32_t value) {
-    do {
-        uint8_t byte = value & 0x7f;
-        value >>= 7;
-        int ret = emit_byte(s, value != 0 ? (byte | 0x80) : byte);
-        if (ret < 0) {
-            return ret;
-        }
-    } while (value != 0);
-    return 0;
+    return runtime_macro_append_uvar(s->buf, s->capacity, &s->size, value);
 }
 
 static int flush_packed_sequence(struct runtime_macro_encode_state *s) {
@@ -163,14 +167,18 @@ static int flush_packed_sequence(struct runtime_macro_encode_state *s) {
 }
 
 static int try_append_packed_tap(struct runtime_macro_encode_state *s, uint32_t keycode) {
-    if (s->pending_packed_count >= sizeof(s->pending_packed)) {
-        return -ENOSPC;
-    }
-
     uint8_t packed;
     int ret = zmk_runtime_macro_pack_key_tap(keycode, &packed);
     if (ret < 0) {
         return ret;
+    }
+
+    /* A longer run continues in a new step, so Studio can show and edit it. */
+    if (s->pending_packed_count == ARRAY_SIZE(s->pending_packed)) {
+        ret = flush_packed_sequence(s);
+        if (ret < 0) {
+            return ret;
+        }
     }
 
     s->pending_packed[s->pending_packed_count++] = packed;
@@ -377,8 +385,7 @@ static int encode_text(struct runtime_macro_encode_state *s, const char *text) {
         bool shift;
         int ret = ascii_char_to_usage(*p, &usage, &shift);
         if (ret < 0) {
-            LOG_ERR("Runtime macro default: unsupported character 0x%02x in `text`",
-                    (unsigned)(unsigned char)*p);
+            LOG_ERR("runtime macro default contains an unsupported character");
             return ret;
         }
 
@@ -534,7 +541,8 @@ static int install_one_default(const struct runtime_macro_default_config *cfg) {
 
     int ret = encode_default_body(cfg, encoded, sizeof(encoded), &size);
     if (ret < 0) {
-        goto encode_failed;
+        LOG_ERR("runtime macro default encode failed: %d", ret);
+        return ret;
     }
 
     /* Seed-if-absent: never overwrite a macro that already exists (a
@@ -547,20 +555,16 @@ static int install_one_default(const struct runtime_macro_default_config *cfg) {
     ret = zmk_runtime_macro_create(cfg->name, encoded, size, ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY,
                                    NULL);
     if (ret == -EEXIST) {
-        LOG_DBG("Runtime macro default: \"%s\" already exists, not overwriting", cfg->name);
+        LOG_DBG("runtime macro default already exists; preserved");
         return 0;
     }
     if (ret < 0) {
-        LOG_ERR("Runtime macro default: \"%s\" failed to install: %d", cfg->name, ret);
+        LOG_ERR("runtime macro default install failed: %d", ret);
         return ret;
     }
 
-    LOG_DBG("Runtime macro default: installed \"%s\" (%u bytes)", cfg->name, (unsigned)size);
+    LOG_DBG("runtime macro default installed: bytes=%u", (unsigned)size);
     return 0;
-
-encode_failed:
-    LOG_ERR("Runtime macro default: \"%s\" failed to encode: %d", cfg->name, ret);
-    return ret;
 }
 
 /* Fires as the settings subsystem's commit callback, i.e. once settings_load()

@@ -24,6 +24,18 @@
 
 #define ZMK_RUNTIME_MACRO_FORMAT_VERSION 1U
 
+/* One KEY_TAP_SEQUENCE step carries at most this many packed keys, the Studio
+ * KeyTapSequenceStep capacity; longer runs are split into several steps. */
+#define ZMK_RUNTIME_MACRO_KEY_TAP_SEQUENCE_MAX_KEYS 64
+
+/* Upper bound of the global tap duration (ms). */
+#define ZMK_RUNTIME_MACRO_TAP_MS_MAX 10000
+
+/* Upper bound of one DELAY step (ms). Playback waits in ZMK's shared behavior
+ * queue, which stores a wait in 31 bits and holds every other macro back for
+ * as long as it waits; a body with a longer delay is malformed (-ERANGE). */
+#define ZMK_RUNTIME_MACRO_DELAY_MS_MAX 60000
+
 enum zmk_runtime_macro_opcode {
     ZMK_RUNTIME_MACRO_OP_DOWN = 1,
     ZMK_RUNTIME_MACRO_OP_UP = 2,
