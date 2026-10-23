@@ -17,12 +17,12 @@ Each macro's body is a compact binary blob supporting:
 - behavior down
 - behavior up
 - behavior tap using the global `tap_ms` setting
-- delay in milliseconds
+- delay in milliseconds, at most 60000 per step (`ZMK_RUNTIME_MACRO_DELAY_MS_MAX`): playback waits in ZMK's shared behavior queue, which holds every other macro back meanwhile
 - packed `&kp` tap sequence using the global `tap_ms` setting
 
 Every macro's name + body together share one RAM pool - see [Macro Size Limits](#macro-size-limits) below.
 
-Tap duration is a scalar custom setting, `tap_ms`, in the same subsystem. If one step needs a different duration, encode it as down, delay, then up.
+Tap duration is a scalar custom setting, `tap_ms` (0 to 10000 ms), in the same subsystem. If one step needs a different duration, encode it as down, delay, then up.
 
 ## User Guide
 
@@ -98,7 +98,7 @@ Memory updates become pending custom setting changes; use **Save Pending** to pe
 
 **Unlocking:** browsing the macro list works without unlocking Studio - `ListMacros` (and `GetMacroGlobalSettings`) return only metadata (slot, name, size, unsaved flag, and global limits), never a macro's contents. Reading a specific macro's steps (`GetMacro`) or making any change (create/edit/rename/delete/reset/save/discard, `set_tap_ms`) requires an unlocked Studio session and is otherwise rejected with an "unlock required" error.
 
-Create/Delete/Rename are macro-domain RPCs on this module's own subsystem (`CreateMacro`/`DeleteMacro`/`RenameMacro`), addressing a macro by its **name**. A client never needs to know that macros are stored as zmk-feature-custom-settings keyspace entries under the `macro/` prefix - the storage is an implementation detail, and no separate custom-settings RPC call is required. `RenameMacro` copies the body server-side and leaves the old entry untouched if it cannot complete, so a rename never loses the macro's content.
+Create/Delete/Rename are macro-domain RPCs on this module's own subsystem (`CreateMacro`/`DeleteMacro`/`RenameMacro`), addressing a macro by its **name**. A client never needs to know that macros are stored as zmk-feature-custom-settings keyspace entries under the `macro/` prefix - the storage is an implementation detail, and no separate custom-settings RPC call is required. `RenameMacro` renames the entry in place in one write: the macro keeps its slot (so `&rmacro N` bindings keep working) and its body, and stays unchanged if the rename cannot complete. This uses `zmk_custom_setting_keyspace_rename()` from the custom settings fork.
 
 `ResetMacro` restores a macro to its compile-time state, addressing it by **slot number**: if a [devicetree default](#devicetree-default-macros) declares a macro of the same name, its body is overwritten with that default; otherwise the macro is deleted (a macro that only ever existed at runtime "resets" to not existing). Like the other body-editing RPCs it takes a `persist` flag - leave it off for a session-only reset (a persisted devicetree default is re-seeded next boot anyway), or set it to write the reset straight to flash.
 
@@ -187,12 +187,12 @@ Every macro's name + body together draw from **one shared RAM pool** sized by `C
 | Kconfig                                                                              | Meaning                                                                                                                                                | Default |
 | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
 | `CONFIG_ZMK_RUNTIME_MACRO_COUNT`                                                     | How many macros can exist at once (bounds the fixed slot-descriptor array, independent of the byte pool below).                                        | 8       |
-| `CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN`                                              | Longest a macro's name may be, in bytes.                                                                                                                | 24      |
+| `CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN`                                              | Longest a macro's name may be, in bytes (at most 31, what Studio messages carry).                                                                        | 24      |
 | `CONFIG_ZMK_RUNTIME_MACRO_POOL_BYTES`                                                | Total bytes shared by every macro's name + body combined.                                                                                               | 1024    |
 | `CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES`                                                 | Largest a single macro's encoded body may be. Also sizes playback/RPC staging buffers.                                                                  | 256     |
 | `CONFIG_ZMK_CUSTOM_SETTINGS_LARGE_VALUE_MAX_SIZE` (from zmk-feature-custom-settings) | Must be raised to at least `MAX_BYTES` (see the `.conf` snippet above) - it caps every large/pooled setting in the firmware, not just this module's.    | 64      |
 
-Raise `POOL_BYTES` if you want many long macros to coexist; raise `MAX_BYTES` (and `LARGE_VALUE_MAX_SIZE` alongside it) if a single macro needs to be longer than 256 bytes. Keep `MAX_BYTES` no larger than you actually need - it sizes the transient playback buffer and the Studio RPC step-staging buffers even for short macros. A longer macro can also decode into more queued key/behavior events than `CONFIG_ZMK_RUNTIME_MACRO_QUEUE_SIZE` (default 64) allows during playback; raise it alongside `MAX_BYTES` if a very long macro's playback aborts with a "queue failed" log.
+Raise `POOL_BYTES` if you want many long macros to coexist; raise `MAX_BYTES` (and `LARGE_VALUE_MAX_SIZE` alongside it) if a single macro needs to be longer than 256 bytes. Keep `MAX_BYTES` no larger than you actually need - it sizes the transient playback buffer and the Studio RPC step-staging buffers even for short macros. A longer macro can decode into more actions than `CONFIG_ZMK_RUNTIME_MACRO_QUEUE_SIZE` (default 64) holds; raise that limit alongside `MAX_BYTES` when needed. Temporary saturation of ZMK's shared behavior queue is handled by delayed retries and does not require raising the decoded-action limit.
 
 If the pool is full, creating or updating a macro fails and the Web UI shows **"Macro pool full: delete or shrink another macro"** - the macro's previous value is left untouched. The Web UI also shows the pool's current usage (e.g. "Shared macro pool: 300/1024 B used") next to the macro list. Raising `CONFIG_ZMK_RUNTIME_MACRO_COUNT` costs a small, fixed amount of RAM per extra slot regardless of the pool budget - it does not affect how many bytes of macro content fit.
 
@@ -205,6 +205,15 @@ This module's macro storage was rebuilt on [zmk-feature-custom-settings](https:/
 - The RPC protocol replaced the old `SetMacroName`/`DeleteMacro` with name-keyed `CreateMacro`/`DeleteMacro`/`RenameMacro` (macro lifecycle is now handled entirely by this module's subsystem - no generic `CreateSetting`/`DeleteSetting` call needed), renamed some fields (`index` → `slot`, `max_macro` → `max_entries`, `MacroSlot` → `MacroDetail`), and addresses `GetMacro`/`SetMacroStepCount`/`SetMacroStep`/`AppendMacroStep` by `slot` (not `name`) - regenerate any custom RPC client against the new `.proto`.
 
 ## Development
+
+Playback decodes the body once, then retains its next action while the shared
+ZMK behavior queue is full. It retries from delayed work without replaying
+accepted presses or losing their releases. A new playback stays busy until
+submission and the existing completion delay finish. Deleting the stored macro
+does not discard actions already decoded for a playback. This adds no idle
+timer or heap allocation. It does not bound queue/transport latency or add an
+abort API. See [the real-kernel pressure check](tests/queue-pressure/README.md)
+and run `bash tests/queue-pressure/run.sh /absolute/resolved/west/workspace`.
 
 ```bash
 pre-commit run

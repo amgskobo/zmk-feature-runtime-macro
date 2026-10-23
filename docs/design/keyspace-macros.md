@@ -41,8 +41,9 @@ ZMK_CUSTOM_SETTING_KEYSPACE_DEFINE_WITH_POOL_SIZE(
   unchanged). The `names.<i>` settings, the module-owned pool, and both
   LISTIFY blocks from the old design are gone.
 - Create/delete/rename go through
-  `zmk_custom_setting_keyspace_create`/`_delete` (rename = create-new +
-  delete-old, see `zmk_runtime_macro_rename`). The generic custom-settings
+  `zmk_custom_setting_keyspace_create`/`_delete`/`_rename` (a rename
+  rewrites the entry in place, so it keeps its slot and the keymap binding
+  to it; see `zmk_runtime_macro_rename`). The generic custom-settings
   Studio RPC (`CreateSetting`/`DeleteSetting`/`ListSettings`/`GetSetting`/
   `WriteValueChunk`) already covers raw entry management, so this module's
   own RPC no longer needs `SetMacroName`/`DeleteMacro` at all.
@@ -56,7 +57,7 @@ ZMK_CUSTOM_SETTING_KEYSPACE_DEFINE_WITH_POOL_SIZE(
   the full `"macro/<name>"` key for `public_key` (stripped back to the bare
   name by this module's `strip_prefix` helper). Verified directly against
   upstream's `custom_settings.c` keyspace interception code, and exercised
-  by the very first tests in `src/test/runtime_macro_test.c`.
+  by the very first tests in `tests/ztest/runtime_macro_test.c`.
 - **Keymap binding**: the behavior keeps its numeric param as the keyspace
   **slot index** (0..`CONFIG_ZMK_RUNTIME_MACRO_COUNT - 1`). Slot indices are
   stable across reboots for a given persisted entry (ordinal persistence
@@ -209,13 +210,13 @@ generic RPC handler's own list/save/discard scope-application passes), so
   is never a digit). A user-facing key like `"macro/42"` is never used as a
   *storage* name (only the ordinal is), so the collision doesn't apply
   post-migration. Verified directly with `test_all_digit_name` in
-  `src/test/runtime_macro_test.c` (create/read/delete round-trip for name
+  `tests/ztest/runtime_macro_test.c` (create/read/delete round-trip for name
   `"42"`) rather than assumed from the code reading above.
-- **`WriteMode` on a rename's delete half**: `zmk_custom_setting_keyspace_delete`
+- **`WriteMode` on delete and rename**: `zmk_custom_setting_keyspace_delete`
   has no mode parameter (it always erases the persisted record if any,
   matching the generic `DeleteSettingRequest`'s shape) - `zmk_runtime_macro_delete`
-  mirrors that (no mode parameter), and `zmk_runtime_macro_rename` only
-  takes a mode for its create half.
+  mirrors that. A rename takes a mode: a MEMORY rename is discarded back
+  to the persisted name, slot unchanged.
 - **`STRUCT_SECTION_ITERABLE`-based keyspace object is public**: this let
   the module skip adding any new accessor API (§5, enabler B) but also
   means `runtime_macros` (the keyspace variable) is a linker symbol other

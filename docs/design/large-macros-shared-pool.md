@@ -380,7 +380,7 @@ stack; plus once per firmware, custom-settings' chunk/record staging at
 oversized `text` default is skipped with the clear log while others install.
 
 **Build (`tests/zmk-config`):** add `-DCONFIG_ZMK_CUSTOM_SETTINGS_LARGE_VALUE_MAX_SIZE=256`
-and `-DCONFIG_ZMK_STUDIO_RPC_THREAD_STACK_SIZE=8192` to Studio targets; `test.py`
+and `-DCONFIG_ZMK_STUDIO_RPC_THREAD_STACK_SIZE=8192` to Studio targets; `tests/test_owner.py`
 asserts `max_macro_bytes`=256 and pool presence. Optional hardware validation via the
 `hw_test_dt_defaults` recipe: write a ~200 B macro over step RPCs, `GetMacro` back,
 reboot, confirm persistence; then fill the pool and confirm the friendly `-ENOSPC`
@@ -409,7 +409,7 @@ pool-full error rendering.
    over-64 B log; file the upstream `set_default_bytes` issue. (§B.5)
 8. proto/.options + handler: steps 64, buffers, sequence splitting,
    `max_macro_bytes`, optional pool occupancy. (§B.4)
-9. `tests/zmk-config` config bumps + `test.py`; web updates; tests per §12;
+9. `tests/zmk-config` config bumps + `tests/test_owner.py`; web updates; tests per §12;
    README. (§B.4, §12)
-10. `pre-commit run`, `python3 -m unittest`, `cd web && npm test`; PR with the
+10. `pre-commit run`, `python3 -m unittest discover -v -s tests -p test_owner.py`, `cd web && npm test`; PR with the
     dependency-pin revert plan noted.
