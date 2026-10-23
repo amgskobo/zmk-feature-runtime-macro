@@ -18,6 +18,8 @@
 #include <cormoran/zmk/custom_settings.h>
 #include <cormoran/zmk/runtime_macro.h>
 
+#include "../runtime_macro_codec.h"
+
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
@@ -43,6 +45,25 @@ ZMK_RPC_CUSTOM_SUBSYSTEM(cormoran__runtime_macro, &runtime_macro_meta,
 
 ZMK_RPC_CUSTOM_SUBSYSTEM_RESPONSE_BUFFER(cormoran__runtime_macro, cormoran_runtime_macro_Response);
 
+/* Every slot fits one ListMacros reply, every name fits the name fields, and
+ * one KEY_TAP_SEQUENCE opcode maps to exactly one KeyTapSequenceStep. */
+BUILD_ASSERT(CONFIG_ZMK_RUNTIME_MACRO_COUNT <=
+                 ARRAY_SIZE(((cormoran_runtime_macro_ListMacrosResponse *)NULL)->macros),
+             "CONFIG_ZMK_RUNTIME_MACRO_COUNT exceeds the ListMacrosResponse capacity");
+BUILD_ASSERT(CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN <
+                     sizeof(((cormoran_runtime_macro_MacroSummary *)NULL)->name) &&
+                 CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN <
+                     sizeof(((cormoran_runtime_macro_CreateMacroRequest *)NULL)->name),
+             "CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN exceeds the RPC name capacity");
+BUILD_ASSERT(ZMK_RUNTIME_MACRO_KEY_TAP_SEQUENCE_MAX_KEYS ==
+                 sizeof(((cormoran_runtime_macro_KeyTapSequenceStep *)NULL)->packed_keys.bytes),
+             "ZMK_RUNTIME_MACRO_KEY_TAP_SEQUENCE_MAX_KEYS must match KeyTapSequenceStep");
+
+#define NO_MACRO_IN_SLOT "No macro in that slot: create one, then read its slot from the macro list"
+BUILD_ASSERT(sizeof(NO_MACRO_IN_SLOT) <=
+                 sizeof(((cormoran_runtime_macro_ErrorResponse *)NULL)->message),
+             "NO_MACRO_IN_SLOT does not fit ErrorResponse.message");
+
 static void set_error(cormoran_runtime_macro_Response *resp, const char *message) {
     cormoran_runtime_macro_ErrorResponse err = cormoran_runtime_macro_ErrorResponse_init_zero;
 
@@ -51,80 +72,49 @@ static void set_error(cormoran_runtime_macro_Response *resp, const char *message
     resp->response_type.error = err;
 }
 
-static void set_errno_error(cormoran_runtime_macro_Response *resp, const char *operation, int err) {
-    cormoran_runtime_macro_ErrorResponse error = cormoran_runtime_macro_ErrorResponse_init_zero;
-
-    snprintf(error.message, sizeof(error.message), "%s failed: %d", operation, err);
-    resp->which_response_type = cormoran_runtime_macro_Response_error_tag;
-    resp->response_type.error = error;
+static void set_status(cormoran_runtime_macro_Response *resp, uint32_t affected_count,
+                       const char *message) {
+    cormoran_runtime_macro_StatusResponse result = cormoran_runtime_macro_StatusResponse_init_zero;
+    result.affected_count = affected_count;
+    snprintf(result.message, sizeof(result.message), "%s", message);
+    resp->which_response_type = cormoran_runtime_macro_Response_status_tag;
+    resp->response_type.status = result;
 }
 
-static int read_uvar(const uint8_t *encoded, size_t size, size_t *offset, uint32_t *value) {
-    uint32_t result = 0;
-    uint8_t shift = 0;
-
-    while (*offset < size && shift <= 28) {
-        uint8_t byte = encoded[(*offset)++];
-        result |= (uint32_t)(byte & 0x7f) << shift;
-
-        if ((byte & 0x80) == 0) {
-            *value = result;
-            return 0;
-        }
-
-        shift += 7;
-    }
-
-    return -EINVAL;
-}
-
-static int append_uvar(uint8_t *dest, size_t capacity, size_t *offset, uint32_t value) {
-    do {
-        if (*offset >= capacity) {
-            return -ENOSPC;
-        }
-
-        uint8_t byte = value & 0x7f;
-        value >>= 7;
-        if (value != 0) {
-            byte |= 0x80;
-        }
-        dest[(*offset)++] = byte;
-    } while (value != 0);
-
-    return 0;
+static enum zmk_custom_setting_write_mode write_mode(bool persist) {
+    return persist ? ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST : ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY;
 }
 
 static int read_step_binding(const uint8_t *encoded, size_t size, size_t *offset,
                              cormoran_runtime_macro_BehaviorBinding *binding) {
-    int ret = read_uvar(encoded, size, offset, &binding->behavior_id);
+    int ret = runtime_macro_read_uvar(encoded, size, offset, &binding->behavior_id);
     if (ret < 0) {
         return ret;
     }
-    ret = read_uvar(encoded, size, offset, &binding->param1);
+    ret = runtime_macro_read_uvar(encoded, size, offset, &binding->param1);
     if (ret < 0) {
         return ret;
     }
-    return read_uvar(encoded, size, offset, &binding->param2);
+    return runtime_macro_read_uvar(encoded, size, offset, &binding->param2);
 }
 
 static int append_step_binding(uint8_t *dest, size_t capacity, size_t *offset,
                                const cormoran_runtime_macro_BehaviorBinding *binding) {
-    int ret = append_uvar(dest, capacity, offset, binding->behavior_id);
+    int ret = runtime_macro_append_uvar(dest, capacity, offset, binding->behavior_id);
     if (ret < 0) {
         return ret;
     }
-    ret = append_uvar(dest, capacity, offset, binding->param1);
+    ret = runtime_macro_append_uvar(dest, capacity, offset, binding->param1);
     if (ret < 0) {
         return ret;
     }
-    return append_uvar(dest, capacity, offset, binding->param2);
+    return runtime_macro_append_uvar(dest, capacity, offset, binding->param2);
 }
 
 static int read_key_tap_sequence_step(const uint8_t *encoded, size_t size, size_t *offset,
                                       cormoran_runtime_macro_KeyTapSequenceStep *sequence) {
     uint32_t sequence_size;
-    int ret = read_uvar(encoded, size, offset, &sequence_size);
+    int ret = runtime_macro_read_uvar(encoded, size, offset, &sequence_size);
     if (ret < 0) {
         return ret;
     }
@@ -148,7 +138,7 @@ static int read_key_tap_sequence_step(const uint8_t *encoded, size_t size, size_
 
 static int append_key_tap_sequence_step(uint8_t *dest, size_t capacity, size_t *offset,
                                         const cormoran_runtime_macro_KeyTapSequenceStep *sequence) {
-    int ret = append_uvar(dest, capacity, offset, sequence->packed_keys.size);
+    int ret = runtime_macro_append_uvar(dest, capacity, offset, sequence->packed_keys.size);
     if (ret < 0) {
         return ret;
     }
@@ -190,7 +180,7 @@ static int decode_one_step(const uint8_t *encoded, size_t encoded_size, size_t *
         return read_step_binding(encoded, encoded_size, offset, &step->step.tap);
     case ZMK_RUNTIME_MACRO_OP_DELAY:
         step->which_step = cormoran_runtime_macro_MacroStep_delay_tag;
-        return read_uvar(encoded, encoded_size, offset, &step->step.delay.delay_ms);
+        return runtime_macro_read_uvar(encoded, encoded_size, offset, &step->step.delay.delay_ms);
     case ZMK_RUNTIME_MACRO_OP_KEY_TAP_SEQUENCE:
         step->which_step = cormoran_runtime_macro_MacroStep_key_tap_sequence_tag;
         return read_key_tap_sequence_step(encoded, encoded_size, offset,
@@ -227,10 +217,11 @@ static int count_steps(const uint8_t *encoded, size_t encoded_size, pb_size_t *c
 /* Append exactly one step's opcode+args to `encoded` at *offset, advancing it.
  * The caller writes the leading ZMK_RUNTIME_MACRO_FORMAT_VERSION byte.
  *
- * No packed-key-run splitting is needed: KeyTapSequenceStep.packed_keys stays
- * capped at max_size:64 by the proto, so every MacroStep already encodes to at
- * most one KEY_TAP_SEQUENCE opcode of <= 64 keys; a macro carries more *steps*
- * up to CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES total, not longer sequences. */
+ * No packed-key-run splitting is needed: KeyTapSequenceStep.packed_keys holds
+ * ZMK_RUNTIME_MACRO_KEY_TAP_SEQUENCE_MAX_KEYS keys, so every MacroStep encodes
+ * to at most one such opcode; the devicetree defaults split longer text the
+ * same way. A macro carries more *steps* up to
+ * CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES total, not longer sequences. */
 static int encode_one_step(const cormoran_runtime_macro_MacroStep *step, uint8_t *encoded,
                            size_t encoded_capacity, size_t *offset) {
     const cormoran_runtime_macro_BehaviorBinding *binding = NULL;
@@ -265,7 +256,8 @@ static int encode_one_step(const cormoran_runtime_macro_MacroStep *step, uint8_t
     encoded[(*offset)++] = opcode;
 
     if (opcode == ZMK_RUNTIME_MACRO_OP_DELAY) {
-        return append_uvar(encoded, encoded_capacity, offset, step->step.delay.delay_ms);
+        return runtime_macro_append_uvar(encoded, encoded_capacity, offset,
+                                         step->step.delay.delay_ms);
     }
     if (opcode == ZMK_RUNTIME_MACRO_OP_KEY_TAP_SEQUENCE) {
         return append_key_tap_sequence_step(encoded, encoded_capacity, offset,
@@ -274,20 +266,15 @@ static int encode_one_step(const cormoran_runtime_macro_MacroStep *step, uint8_t
     return append_step_binding(encoded, encoded_capacity, offset, binding);
 }
 
-struct list_macros_ctx {
-    cormoran_runtime_macro_ListMacrosResponse *result;
-};
-
 static int list_macros_cb(uint32_t slot, const char *name, size_t encoded_size,
                           bool has_unsaved_changes, void *user_data) {
-    struct list_macros_ctx *ctx = user_data;
+    cormoran_runtime_macro_ListMacrosResponse *result = user_data;
 
-    if (ctx->result->macros_count >= ARRAY_SIZE(ctx->result->macros)) {
+    if (result->macros_count >= ARRAY_SIZE(result->macros)) {
         return -ENOSPC;
     }
 
-    cormoran_runtime_macro_MacroSummary *summary =
-        &ctx->result->macros[ctx->result->macros_count++];
+    cormoran_runtime_macro_MacroSummary *summary = &result->macros[result->macros_count++];
     summary->slot = slot;
     snprintf(summary->name, sizeof(summary->name), "%s", name);
     summary->encoded_size = encoded_size;
@@ -297,48 +284,37 @@ static int list_macros_cb(uint32_t slot, const char *name, size_t encoded_size,
 }
 
 static int handle_list_macros(cormoran_runtime_macro_Response *resp) {
-    cormoran_runtime_macro_ListMacrosResponse result =
-        cormoran_runtime_macro_ListMacrosResponse_init_zero;
-
-    result.max_macro_bytes = CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES;
-    result.max_name_length = CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN;
-
-    struct list_macros_ctx ctx = {.result = &result};
-    int ret = zmk_runtime_macro_for_each(list_macros_cb, &ctx);
-    if (ret < 0) {
-        return ret;
-    }
-
+    /* Built in the (zeroed) response buffer itself: a second copy would put
+     * the whole list on the RPC thread's stack. */
+    cormoran_runtime_macro_ListMacrosResponse *result = &resp->response_type.list_macros;
     resp->which_response_type = cormoran_runtime_macro_Response_list_macros_tag;
-    resp->response_type.list_macros = result;
+    result->max_macro_bytes = CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES;
+    result->max_name_length = CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN;
 
-    return 0;
+    return zmk_runtime_macro_for_each(list_macros_cb, result);
 }
 
-static int read_tap_ms(uint32_t *tap_ms) {
-    struct zmk_custom_setting_value value;
-    int ret = zmk_custom_setting_read_by_key(ZMK_RUNTIME_MACRO_SUBSYSTEM_ID,
-                                             ZMK_RUNTIME_MACRO_TAP_MS_KEY, &value);
-    if (ret < 0) {
-        return ret;
+/* A delay above ZMK_RUNTIME_MACRO_DELAY_MS_MAX would hold ZMK's shared
+ * behavior queue; refuse it with its own message rather than a bare errno. */
+static bool refuse_long_delay(const cormoran_runtime_macro_MacroStep *step,
+                              cormoran_runtime_macro_Response *resp) {
+    if (step->which_step != cormoran_runtime_macro_MacroStep_delay_tag ||
+        step->step.delay.delay_ms <= ZMK_RUNTIME_MACRO_DELAY_MS_MAX) {
+        return false;
     }
-    if (value.type != ZMK_CUSTOM_SETTING_VALUE_TYPE_INT32 || value.int32_value < 0) {
-        return -EINVAL;
-    }
-
-    *tap_ms = MIN(value.int32_value, 10000);
-    return 0;
+    char message[sizeof(resp->response_type.error.message)];
+    snprintf(message, sizeof(message), "Delay must be at most %u ms",
+             (unsigned int)ZMK_RUNTIME_MACRO_DELAY_MS_MAX);
+    set_error(resp, message);
+    return true;
 }
 
-static int handle_get_macro_global_settings(cormoran_runtime_macro_Response *resp) {
+static void handle_get_macro_global_settings(cormoran_runtime_macro_Response *resp) {
     cormoran_runtime_macro_GetMacroGlobalSettingsResponse result =
         cormoran_runtime_macro_GetMacroGlobalSettingsResponse_init_zero;
 
     result.has_settings = true;
-    int ret = read_tap_ms(&result.settings.tap_ms);
-    if (ret < 0) {
-        return ret;
-    }
+    result.settings.tap_ms = zmk_runtime_macro_tap_ms();
     result.settings.max_entries = CONFIG_ZMK_RUNTIME_MACRO_COUNT;
     result.settings.key_press_behavior_id =
         zmk_behavior_get_local_id(DEVICE_DT_NAME(DT_NODELABEL(kp)));
@@ -347,33 +323,22 @@ static int handle_get_macro_global_settings(cormoran_runtime_macro_Response *res
 
     resp->which_response_type = cormoran_runtime_macro_Response_get_macro_global_settings_tag;
     resp->response_type.get_macro_global_settings = result;
-
-    return 0;
 }
 
 static int handle_set_tap_ms(const cormoran_runtime_macro_SetTapMsRequest *req,
                              cormoran_runtime_macro_Response *resp) {
-    if (req->tap_ms > 10000) {
+    if (req->tap_ms > ZMK_RUNTIME_MACRO_TAP_MS_MAX) {
         return -ERANGE;
     }
 
-    struct zmk_custom_setting_value value = ZMK_CUSTOM_SETTING_VALUE_INT32(req->tap_ms);
-    enum zmk_custom_setting_write_mode mode =
-        req->persist ? ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST : ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY;
-
-    int ret = zmk_custom_setting_write_by_key(ZMK_RUNTIME_MACRO_SUBSYSTEM_ID,
-                                              ZMK_RUNTIME_MACRO_TAP_MS_KEY, &value, mode);
+    int ret = zmk_custom_setting_write_by_key(
+        ZMK_RUNTIME_MACRO_SUBSYSTEM_ID, ZMK_RUNTIME_MACRO_TAP_MS_KEY,
+        &ZMK_CUSTOM_SETTING_VALUE_INT32(req->tap_ms), write_mode(req->persist));
     if (ret < 0) {
         return ret;
     }
 
-    cormoran_runtime_macro_StatusResponse result = cormoran_runtime_macro_StatusResponse_init_zero;
-    result.affected_count = 1;
-    snprintf(result.message, sizeof(result.message), "Runtime macro tap_ms updated");
-
-    resp->which_response_type = cormoran_runtime_macro_Response_status_tag;
-    resp->response_type.status = result;
-
+    set_status(resp, 1, "Runtime macro tap_ms updated");
     return 0;
 }
 
@@ -392,14 +357,9 @@ static int resolve_slot_name(uint32_t slot, char *name, size_t name_capacity,
     if (ret == -ERANGE) {
         set_error(resp, "Slot out of range");
     } else if (ret == -ENOENT) {
-        set_error(resp, "No macro bound to that slot - create one first with CreateMacro, "
-                        "then read its assigned slot from the macro list");
+        set_error(resp, NO_MACRO_IN_SLOT);
     }
     return ret;
-}
-
-static enum zmk_custom_setting_write_mode write_mode(bool persist) {
-    return persist ? ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST : ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY;
 }
 
 /* Staging for a streamed GetMacro reply. handle_get_macro() reads the macro
@@ -489,15 +449,6 @@ static int read_macro_blob(const char *name, uint8_t *encoded, size_t capacity, 
     return 0;
 }
 
-static void set_status(cormoran_runtime_macro_Response *resp, uint32_t affected_count,
-                       const char *message) {
-    cormoran_runtime_macro_StatusResponse result = cormoran_runtime_macro_StatusResponse_init_zero;
-    result.affected_count = affected_count;
-    snprintf(result.message, sizeof(result.message), "%s", message);
-    resp->which_response_type = cormoran_runtime_macro_Response_status_tag;
-    resp->response_type.status = result;
-}
-
 static int handle_set_macro_step_count(const cormoran_runtime_macro_SetMacroStepCountRequest *req,
                                        cormoran_runtime_macro_Response *resp) {
     if (req->step_count > RUNTIME_MACRO_RPC_MAX_STEPS) {
@@ -570,6 +521,9 @@ static int handle_set_macro_step(const cormoran_runtime_macro_SetMacroStepReques
     if (!req->has_step) {
         return -EINVAL;
     }
+    if (refuse_long_delay(&req->step, resp)) {
+        return 0;
+    }
 
     char name[CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN + 1];
     int ret = resolve_slot_name(req->slot, name, sizeof(name), resp);
@@ -638,6 +592,9 @@ static int handle_append_macro_step(const cormoran_runtime_macro_AppendMacroStep
     if (!req->has_step) {
         return -EINVAL;
     }
+    if (refuse_long_delay(&req->step, resp)) {
+        return 0;
+    }
 
     char name[CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN + 1];
     int ret = resolve_slot_name(req->slot, name, sizeof(name), resp);
@@ -687,13 +644,7 @@ static int handle_save_macros(cormoran_runtime_macro_Response *resp) {
         return ret;
     }
 
-    cormoran_runtime_macro_StatusResponse result = cormoran_runtime_macro_StatusResponse_init_zero;
-    result.affected_count = affected_count;
-    snprintf(result.message, sizeof(result.message), "Runtime macro settings saved");
-
-    resp->which_response_type = cormoran_runtime_macro_Response_status_tag;
-    resp->response_type.status = result;
-
+    set_status(resp, affected_count, "Runtime macro settings saved");
     return 0;
 }
 
@@ -705,23 +656,16 @@ static int handle_discard_macros(cormoran_runtime_macro_Response *resp) {
         return ret;
     }
 
-    cormoran_runtime_macro_StatusResponse result = cormoran_runtime_macro_StatusResponse_init_zero;
-    result.affected_count = affected_count;
-    snprintf(result.message, sizeof(result.message), "Runtime macro settings discarded");
-
-    resp->which_response_type = cormoran_runtime_macro_Response_status_tag;
-    resp->response_type.status = result;
-
+    set_status(resp, affected_count, "Runtime macro settings discarded");
     return 0;
 }
 
-/* Map the errno a create/rename returns to a clear, actionable message and
- * set it on `resp` directly (returning 0 so the generic errno dispatch at the
- * bottom of runtime_macro_rpc_handle_request() does not overwrite it). `name`
- * is the offending macro name for the interpolated cases. Returns 0 if it
- * handled `ret`, or `ret` unchanged if it is not one of the known cases (let
- * the caller return it for the generic path). */
-static int set_lifecycle_error(cormoran_runtime_macro_Response *resp, int ret, const char *name) {
+/* Map the errno a create/delete/rename returns to a clear, actionable
+ * message and set it on `resp` directly (returning 0 so the generic errno
+ * dispatch at the bottom of runtime_macro_rpc_handle_request() does not
+ * overwrite it). Returns `ret` unchanged if it is not one of the known cases
+ * (let the caller return it for the generic path). */
+static int set_lifecycle_error(cormoran_runtime_macro_Response *resp, int ret) {
     switch (ret) {
     case -EEXIST:
         set_error(resp, "A macro with that name already exists");
@@ -729,7 +673,7 @@ static int set_lifecycle_error(cormoran_runtime_macro_Response *resp, int ret, c
     case -ENOENT:
         set_error(resp, "No macro with that name");
         return 0;
-    case -EMSGSIZE:
+    case -ENAMETOOLONG:
         set_error(resp, "Macro name is too long");
         return 0;
     case -ENOSPC:
@@ -739,7 +683,6 @@ static int set_lifecycle_error(cormoran_runtime_macro_Response *resp, int ret, c
         set_error(resp, "Invalid macro name");
         return 0;
     default:
-        ARG_UNUSED(name);
         return ret;
     }
 }
@@ -751,26 +694,19 @@ static int handle_create_macro(const cormoran_runtime_macro_CreateMacroRequest *
         return 0;
     }
 
-    enum zmk_custom_setting_write_mode mode =
-        req->persist ? ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST : ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY;
-
     /* A fresh macro is just the format-version header with no steps; the
      * client adds steps afterwards with AppendMacroStep. */
     const uint8_t empty_body[] = {ZMK_RUNTIME_MACRO_FORMAT_VERSION};
     uint32_t slot = 0;
-    int ret = zmk_runtime_macro_create(req->name, empty_body, sizeof(empty_body), mode, &slot);
+    int ret = zmk_runtime_macro_create(req->name, empty_body, sizeof(empty_body),
+                                       write_mode(req->persist), &slot);
     if (ret < 0) {
-        return set_lifecycle_error(resp, ret, req->name);
+        return set_lifecycle_error(resp, ret);
     }
 
-    cormoran_runtime_macro_StatusResponse result = cormoran_runtime_macro_StatusResponse_init_zero;
-    result.affected_count = 1;
-    snprintf(result.message, sizeof(result.message), "Macro \"%s\" created (slot %u)", req->name,
-             slot);
-
-    resp->which_response_type = cormoran_runtime_macro_Response_status_tag;
-    resp->response_type.status = result;
-
+    char message[96];
+    snprintf(message, sizeof(message), "Macro \"%s\" created (slot %u)", req->name, slot);
+    set_status(resp, 1, message);
     return 0;
 }
 
@@ -783,16 +719,12 @@ static int handle_delete_macro(const cormoran_runtime_macro_DeleteMacroRequest *
 
     int ret = zmk_runtime_macro_delete(req->name);
     if (ret < 0) {
-        return set_lifecycle_error(resp, ret, req->name);
+        return set_lifecycle_error(resp, ret);
     }
 
-    cormoran_runtime_macro_StatusResponse result = cormoran_runtime_macro_StatusResponse_init_zero;
-    result.affected_count = 1;
-    snprintf(result.message, sizeof(result.message), "Macro \"%s\" deleted", req->name);
-
-    resp->which_response_type = cormoran_runtime_macro_Response_status_tag;
-    resp->response_type.status = result;
-
+    char message[96];
+    snprintf(message, sizeof(message), "Macro \"%s\" deleted", req->name);
+    set_status(resp, 1, message);
     return 0;
 }
 
@@ -803,21 +735,14 @@ static int handle_rename_macro(const cormoran_runtime_macro_RenameMacroRequest *
         return 0;
     }
 
-    enum zmk_custom_setting_write_mode mode =
-        req->persist ? ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST : ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY;
-
-    int ret = zmk_runtime_macro_rename(req->old_name, req->new_name, mode);
+    int ret = zmk_runtime_macro_rename(req->old_name, req->new_name, write_mode(req->persist));
     if (ret < 0) {
-        return set_lifecycle_error(resp, ret, req->new_name);
+        return set_lifecycle_error(resp, ret);
     }
 
-    cormoran_runtime_macro_StatusResponse result = cormoran_runtime_macro_StatusResponse_init_zero;
-    result.affected_count = 1;
-    snprintf(result.message, sizeof(result.message), "Macro renamed to \"%s\"", req->new_name);
-
-    resp->which_response_type = cormoran_runtime_macro_Response_status_tag;
-    resp->response_type.status = result;
-
+    char message[96];
+    snprintf(message, sizeof(message), "Macro renamed to \"%s\"", req->new_name);
+    set_status(resp, 1, message);
     return 0;
 }
 
@@ -929,7 +854,7 @@ static bool runtime_macro_rpc_handle_request(const zmk_custom_CallRequest *raw_r
         ret = handle_set_macro_step_count(&req.request_type.set_macro_step_count, resp);
         break;
     case cormoran_runtime_macro_Request_get_macro_global_settings_tag:
-        ret = handle_get_macro_global_settings(resp);
+        handle_get_macro_global_settings(resp);
         break;
     case cormoran_runtime_macro_Request_set_tap_ms_tag:
         ret = handle_set_tap_ms(&req.request_type.set_tap_ms, resp);
@@ -979,10 +904,11 @@ static bool runtime_macro_rpc_handle_request(const zmk_custom_CallRequest *raw_r
         if (ret == -ENOSPC) {
             set_error(resp, "Macro pool full: delete or shrink another macro");
         } else if (ret == -ENOENT) {
-            set_error(resp, "No macro bound to that slot - create one first with CreateMacro, "
-                            "then read its assigned slot from the macro list");
+            set_error(resp, NO_MACRO_IN_SLOT);
         } else {
-            set_errno_error(resp, "Runtime macro RPC", ret);
+            char message[sizeof(resp->response_type.error.message)];
+            snprintf(message, sizeof(message), "Runtime macro RPC failed: %d", ret);
+            set_error(resp, message);
         }
     }
 

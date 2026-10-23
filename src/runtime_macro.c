@@ -24,6 +24,8 @@
 #include <zmk/behavior.h>
 #include <zmk/behavior_queue.h>
 
+#include "runtime_macro_codec.h"
+
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #define RUNTIME_MACRO_WAIT_BEHAVIOR_NAME "runtime_macro_wait"
@@ -31,7 +33,6 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 struct runtime_macro_queue_item {
     bool is_delay;
     bool is_tap;
-    bool use_tap_ms;
     bool pressed;
     uint32_t delay_ms;
     struct zmk_behavior_binding binding;
@@ -39,24 +40,30 @@ struct runtime_macro_queue_item {
 
 struct runtime_macro_player {
     struct k_mutex lock;
-    struct k_work play_work;
+    struct k_work_delayable play_work;
     struct k_work_delayable clear_active_work;
     bool active;
     uint32_t slot;
     struct zmk_behavior_binding_event event;
     uint8_t encoded[CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES];
     struct runtime_macro_queue_item items[CONFIG_ZMK_RUNTIME_MACRO_QUEUE_SIZE];
+    /* Accepted queue entries cannot be rolled back. Keep the next edge until
+     * the shared queue admits it, including a tap's outstanding release. */
+    size_t count;
+    size_t next;
+    uint32_t pending_delay_ms;
+    uint32_t queued_duration_ms;
+    bool prepared;
+    bool tap_release_pending;
 };
 
 static void runtime_macro_play_work_handler(struct k_work *work);
 static void runtime_macro_clear_active_work_handler(struct k_work *work);
-static int queue_runtime_macro(const struct runtime_macro_queue_item *items, size_t count,
-                               const struct zmk_behavior_binding_event *event,
-                               uint32_t *queued_duration_ms);
+static int queue_runtime_macro(const struct zmk_behavior_binding_event *event);
 
 static struct runtime_macro_player player = {
     .lock = Z_MUTEX_INITIALIZER(player.lock),
-    .play_work = Z_WORK_INITIALIZER(runtime_macro_play_work_handler),
+    .play_work = Z_WORK_DELAYABLE_INITIALIZER(runtime_macro_play_work_handler),
     .clear_active_work = Z_WORK_DELAYABLE_INITIALIZER(runtime_macro_clear_active_work_handler),
 };
 
@@ -96,6 +103,12 @@ BUILD_ASSERT(CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES <= CONFIG_ZMK_CUSTOM_SETTINGS_LA
              "ZMK_CUSTOM_SETTINGS_LARGE_VALUE_MAX_SIZE");
 BUILD_ASSERT(CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES <= CONFIG_ZMK_RUNTIME_MACRO_POOL_BYTES,
              "ZMK_RUNTIME_MACRO_MAX_BYTES must not exceed ZMK_RUNTIME_MACRO_POOL_BYTES");
+/* Every decoded action adds at most one tap and one delay, so the sum of a
+ * whole macro's waits never overflows and fits the behavior queue's wait. */
+BUILD_ASSERT((uint64_t)CONFIG_ZMK_RUNTIME_MACRO_QUEUE_SIZE *(ZMK_RUNTIME_MACRO_TAP_MS_MAX +
+                                                             ZMK_RUNTIME_MACRO_DELAY_MS_MAX) <
+                 INT32_MAX,
+             "a runtime macro's total wait must fit the 31-bit behavior queue wait");
 
 /* A macro's whole identity+content is one runtime_macros keyspace entry:
  * "macro/<name>" -> encoded body. max_key_len leaves room for the "macro/"
@@ -120,7 +133,8 @@ ZMK_CUSTOM_SETTING_DEFINE(runtime_macro_tap_ms, ZMK_RUNTIME_MACRO_SUBSYSTEM_ID,
                           ZMK_CUSTOM_SETTING_VALUE_INT32(CONFIG_ZMK_RUNTIME_MACRO_DEFAULT_TAP_MS),
                           ZMK_CUSTOM_SETTING_CONFIDENTIALITY_RPC_PUBLIC,
                           ZMK_CUSTOM_SETTING_PERMISSION_UNSECURE,
-                          ZMK_CUSTOM_SETTING_PERMISSION_SECURE, ZMK_CUSTOM_SETTING_NO_CONSTRAINT);
+                          ZMK_CUSTOM_SETTING_PERMISSION_SECURE,
+                          ZMK_CUSTOM_SETTING_RANGE_INT32(0, ZMK_RUNTIME_MACRO_TAP_MS_MAX));
 
 #define RUNTIME_MACRO_PACKED_KEY_LSFT BIT(7)
 #define RUNTIME_MACRO_PACKED_KEY_USAGE_MASK 0x7f
@@ -158,32 +172,10 @@ int zmk_runtime_macro_unpack_key_tap(uint8_t packed_key, uint32_t *keycode) {
     return 0;
 }
 
-static int read_uvar(const uint8_t *encoded, size_t size, size_t *offset, uint32_t *value) {
-    uint32_t result = 0;
-    uint8_t shift = 0;
-
-    while (*offset < size && shift <= 28) {
-        uint8_t byte = encoded[(*offset)++];
-        if (shift == 28 && (byte & 0xf0) != 0) {
-            return -EINVAL;
-        }
-        result |= (uint32_t)(byte & 0x7f) << shift;
-
-        if ((byte & 0x80) == 0) {
-            *value = result;
-            return 0;
-        }
-
-        shift += 7;
-    }
-
-    return -EINVAL;
-}
-
 static int read_binding(const uint8_t *encoded, size_t size, size_t *offset,
                         struct zmk_behavior_binding *binding) {
     uint32_t behavior_id;
-    int ret = read_uvar(encoded, size, offset, &behavior_id);
+    int ret = runtime_macro_read_uvar(encoded, size, offset, &behavior_id);
     if (ret < 0) {
         return ret;
     }
@@ -199,11 +191,11 @@ static int read_binding(const uint8_t *encoded, size_t size, size_t *offset,
 
     uint32_t param1;
     uint32_t param2;
-    ret = read_uvar(encoded, size, offset, &param1);
+    ret = runtime_macro_read_uvar(encoded, size, offset, &param1);
     if (ret < 0) {
         return ret;
     }
-    ret = read_uvar(encoded, size, offset, &param2);
+    ret = runtime_macro_read_uvar(encoded, size, offset, &param2);
     if (ret < 0) {
         return ret;
     }
@@ -242,23 +234,12 @@ static int append_tap_item(struct runtime_macro_queue_item *items, size_t *count
 static int read_key_tap_sequence(const uint8_t *encoded, size_t size, size_t *offset,
                                  struct runtime_macro_queue_item *items, size_t *count) {
     uint32_t sequence_size;
-    int ret = read_uvar(encoded, size, offset, &sequence_size);
+    int ret = runtime_macro_read_uvar(encoded, size, offset, &sequence_size);
     if (ret < 0) {
         return ret;
     }
     if (sequence_size > size - *offset) {
         return -EINVAL;
-    }
-
-    zmk_behavior_local_id_t kp_id = zmk_behavior_get_local_id(DEVICE_DT_NAME(DT_NODELABEL(kp)));
-    if (kp_id == UINT16_MAX) {
-        return -ENODEV;
-    }
-
-    const char *kp_name =
-        zmk_behavior_find_behavior_name_from_local_id((zmk_behavior_local_id_t)kp_id);
-    if (!kp_name) {
-        return -ENODEV;
     }
 
     for (uint32_t i = 0; i < sequence_size; i++) {
@@ -268,10 +249,10 @@ static int read_key_tap_sequence(const uint8_t *encoded, size_t size, size_t *of
             return ret;
         }
 
+        /* Validation also fails with -ENODEV if &kp is not in the build. */
         struct zmk_behavior_binding binding = {
-            .behavior_dev = kp_name,
+            .behavior_dev = DEVICE_DT_NAME(DT_NODELABEL(kp)),
             .param1 = keycode,
-            .param2 = 0,
         };
 
         ret = zmk_behavior_validate_binding(&binding);
@@ -308,9 +289,12 @@ static int decode_macro(const uint8_t *encoded, size_t size, struct runtime_macr
 
         if (opcode == ZMK_RUNTIME_MACRO_OP_DELAY) {
             uint32_t delay_ms;
-            int ret = read_uvar(encoded, size, &offset, &delay_ms);
+            int ret = runtime_macro_read_uvar(encoded, size, &offset, &delay_ms);
             if (ret < 0) {
                 return ret;
+            }
+            if (delay_ms > ZMK_RUNTIME_MACRO_DELAY_MS_MAX) {
+                return -ERANGE;
             }
 
             ret = append_item(items, count,
@@ -368,7 +352,7 @@ static int decode_macro(const uint8_t *encoded, size_t size, struct runtime_macr
     return 0;
 }
 
-static uint32_t get_runtime_macro_tap_ms(void) {
+uint32_t zmk_runtime_macro_tap_ms(void) {
     struct zmk_custom_setting_value value;
     int ret = zmk_custom_setting_read_by_key(ZMK_RUNTIME_MACRO_SUBSYSTEM_ID,
                                              ZMK_RUNTIME_MACRO_TAP_MS_KEY, &value);
@@ -376,7 +360,7 @@ static uint32_t get_runtime_macro_tap_ms(void) {
         return CONFIG_ZMK_RUNTIME_MACRO_DEFAULT_TAP_MS;
     }
 
-    return MIN(value.int32_value, 10000);
+    return MIN(value.int32_value, ZMK_RUNTIME_MACRO_TAP_MS_MAX);
 }
 
 /* Build the keyspace key "macro/<name>" into a caller-owned scratch buffer. */
@@ -435,10 +419,16 @@ static int runtime_macro_start_playback(uint32_t slot,
     k_work_cancel_delayable(&player.clear_active_work);
     player.slot = slot;
     player.event = *event;
+    player.count = 0;
+    player.next = 0;
+    player.pending_delay_ms = 0;
+    player.queued_duration_ms = 0;
+    player.prepared = false;
+    player.tap_release_pending = false;
     player.active = true;
     k_mutex_unlock(&player.lock);
 
-    int ret = k_work_submit(&player.play_work);
+    int ret = k_work_reschedule(&player.play_work, K_NO_WAIT);
     if (ret < 0) {
         runtime_macro_clear_active_work_handler(&player.clear_active_work.work);
         return ret;
@@ -453,8 +443,7 @@ static void runtime_macro_finish_playback(uint32_t active_ms) {
         return;
     }
 
-    uint32_t clear_delay_ms = active_ms == UINT32_MAX ? UINT32_MAX : active_ms + 1;
-    k_work_schedule(&player.clear_active_work, K_MSEC(clear_delay_ms));
+    k_work_schedule(&player.clear_active_work, K_MSEC(active_ms + 1));
 }
 
 static void runtime_macro_play_work_handler(struct k_work *work) {
@@ -465,7 +454,7 @@ static void runtime_macro_play_work_handler(struct k_work *work) {
     struct zmk_behavior_binding_event event = player.event;
     k_mutex_unlock(&player.lock);
 
-    if (!runtime_macros.slots[slot].in_use) {
+    if (!player.prepared && !runtime_macros.slots[slot].in_use) {
         /* The slot was deleted between the keypress and this deferred work
          * running - nothing to play. */
         LOG_DBG("Runtime macro slot %u is empty at playback time", slot);
@@ -473,123 +462,123 @@ static void runtime_macro_play_work_handler(struct k_work *work) {
         return;
     }
 
-    size_t body_size = 0;
-    int ret = zmk_custom_setting_read_into(&runtime_macros.slots[slot].setting, player.encoded,
+    int ret;
+    if (!player.prepared) {
+        size_t body_size = 0;
+        ret = zmk_custom_setting_read_into(&runtime_macros.slots[slot].setting, player.encoded,
                                            sizeof(player.encoded), &body_size, NULL);
+        if (ret < 0) {
+            LOG_WRN("Runtime macro slot %u body read failed: %d", slot, ret);
+            runtime_macro_finish_playback(0);
+            return;
+        }
+
+        ret = decode_macro(player.encoded, body_size, player.items, &player.count);
+        if (ret < 0) {
+            LOG_WRN("Runtime macro slot %u decode failed: %d", slot, ret);
+            runtime_macro_finish_playback(0);
+            return;
+        }
+
+        player.prepared = true;
+    }
+
+    ret = queue_runtime_macro(&event);
     if (ret < 0) {
-        LOG_WRN("Runtime macro slot %u body read failed: %d", slot, ret);
-        runtime_macro_finish_playback(0);
+        /* The public queue uses K_NO_WAIT: yielding lets its delayed consumer
+         * drain. Reloading the body or clearing active here would lose an
+         * already-accepted press's release or replay earlier presses. */
+        k_work_reschedule(&player.play_work, K_MSEC(10));
         return;
     }
 
-    size_t count = 0;
-    ret = decode_macro(player.encoded, body_size, player.items, &count);
-    if (ret < 0) {
-        LOG_WRN("Runtime macro slot %u decode failed: %d", slot, ret);
-        runtime_macro_finish_playback(0);
-        return;
-    }
-
-    uint32_t queued_duration_ms = 0;
-    ret = queue_runtime_macro(player.items, count, &event, &queued_duration_ms);
-    if (ret < 0) {
-        LOG_WRN("Runtime macro slot %u queue failed: %d", slot, ret);
-        runtime_macro_finish_playback(0);
-        return;
-    }
-
-    runtime_macro_finish_playback(queued_duration_ms);
+    runtime_macro_finish_playback(player.queued_duration_ms);
 }
 
 static int queue_behavior(const struct zmk_behavior_binding_event *event,
                           const struct zmk_behavior_binding *binding, bool pressed,
                           uint32_t wait_ms) {
     int ret = zmk_behavior_queue_add(event, *binding, pressed, wait_ms);
-    if (ret < 0) {
+    if (ret < 0 && ret != -ENOMSG && ret != -EAGAIN) {
         LOG_WRN("Runtime macro behavior queue add failed: %d", ret);
     }
 
     return ret;
 }
 
-static void add_saturating_delay(uint32_t *total_ms, uint32_t delay_ms) {
-    if (UINT32_MAX - *total_ms < delay_ms) {
-        *total_ms = UINT32_MAX;
-    } else {
-        *total_ms += delay_ms;
+/* A delay right after item `*i` becomes the wait after its edge; `*i` then
+ * names that delay item, so it is consumed with the edge. */
+static uint32_t take_following_delay(size_t *i) {
+    if (*i + 1 < player.count && player.items[*i + 1].is_delay) {
+        (*i)++;
+        return player.items[*i].delay_ms;
     }
+    return 0;
 }
 
-static int queue_runtime_macro(const struct runtime_macro_queue_item *items, size_t count,
-                               const struct zmk_behavior_binding_event *event,
-                               uint32_t *queued_duration_ms) {
-    uint32_t pending_delay_ms = 0;
-    *queued_duration_ms = 0;
-
+static int queue_runtime_macro(const struct zmk_behavior_binding_event *event) {
     struct zmk_behavior_binding none_binding = {
         .behavior_dev = RUNTIME_MACRO_WAIT_BEHAVIOR_NAME,
     };
 
-    for (size_t i = 0; i < count; i++) {
-        const struct runtime_macro_queue_item *item = &items[i];
+    while (player.next < player.count) {
+        size_t i = player.next;
+        const struct runtime_macro_queue_item *item = &player.items[i];
 
         if (item->is_delay) {
-            uint32_t delay_ms = item->use_tap_ms ? get_runtime_macro_tap_ms() : item->delay_ms;
-            add_saturating_delay(&pending_delay_ms, delay_ms);
+            player.pending_delay_ms += item->delay_ms;
+            player.next++;
             continue;
         }
 
-        if (pending_delay_ms > 0) {
-            int ret = queue_behavior(event, &none_binding, true, pending_delay_ms);
+        if (player.pending_delay_ms > 0) {
+            int ret = queue_behavior(event, &none_binding, true, player.pending_delay_ms);
             if (ret < 0) {
                 return ret;
             }
-            add_saturating_delay(queued_duration_ms, pending_delay_ms);
-            pending_delay_ms = 0;
+            player.queued_duration_ms += player.pending_delay_ms;
+            player.pending_delay_ms = 0;
         }
 
         if (item->is_tap) {
-            uint32_t tap_ms = get_runtime_macro_tap_ms();
-            int ret = queue_behavior(event, &item->binding, true, tap_ms);
-            if (ret < 0) {
-                return ret;
-            }
-            add_saturating_delay(queued_duration_ms, tap_ms);
-
-            uint32_t wait_ms = 0;
-            if (i + 1 < count && items[i + 1].is_delay) {
-                wait_ms =
-                    items[i + 1].use_tap_ms ? get_runtime_macro_tap_ms() : items[i + 1].delay_ms;
-                i++;
+            int ret;
+            if (!player.tap_release_pending) {
+                uint32_t tap_ms = zmk_runtime_macro_tap_ms();
+                ret = queue_behavior(event, &item->binding, true, tap_ms);
+                if (ret < 0) {
+                    return ret;
+                }
+                player.queued_duration_ms += tap_ms;
+                player.tap_release_pending = true;
             }
 
+            uint32_t wait_ms = take_following_delay(&i);
             ret = queue_behavior(event, &item->binding, false, wait_ms);
             if (ret < 0) {
                 return ret;
             }
-            add_saturating_delay(queued_duration_ms, wait_ms);
+            player.queued_duration_ms += wait_ms;
+            player.tap_release_pending = false;
+            player.next = i + 1;
             continue;
         }
 
-        uint32_t wait_ms = 0;
-        if (i + 1 < count && items[i + 1].is_delay) {
-            wait_ms = items[i + 1].use_tap_ms ? get_runtime_macro_tap_ms() : items[i + 1].delay_ms;
-            i++;
-        }
-
+        uint32_t wait_ms = take_following_delay(&i);
         int ret = queue_behavior(event, &item->binding, item->pressed, wait_ms);
         if (ret < 0) {
             return ret;
         }
-        add_saturating_delay(queued_duration_ms, wait_ms);
+        player.queued_duration_ms += wait_ms;
+        player.next = i + 1;
     }
 
-    if (pending_delay_ms > 0) {
-        int ret = queue_behavior(event, &none_binding, true, pending_delay_ms);
+    if (player.pending_delay_ms > 0) {
+        int ret = queue_behavior(event, &none_binding, true, player.pending_delay_ms);
         if (ret < 0) {
             return ret;
         }
-        add_saturating_delay(queued_duration_ms, pending_delay_ms);
+        player.queued_duration_ms += player.pending_delay_ms;
+        player.pending_delay_ms = 0;
     }
 
     return 0;
@@ -619,13 +608,13 @@ int zmk_runtime_macro_create(const char *name, const uint8_t *encoded, size_t en
     if (!name || name[0] == '\0') {
         return -EINVAL;
     }
+    if (encoded_size > CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES) {
+        return -EMSGSIZE;
+    }
 
     int ret = zmk_runtime_macro_validate_encoded(encoded, encoded_size);
     if (ret < 0) {
         return ret;
-    }
-    if (encoded_size > CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES) {
-        return -EMSGSIZE;
     }
 
     char key[RUNTIME_MACRO_MAX_KEY_LEN];
@@ -679,12 +668,12 @@ int zmk_runtime_macro_delete(const char *name) {
 
 int zmk_runtime_macro_write(const char *name, const uint8_t *encoded, size_t encoded_size,
                             enum zmk_custom_setting_write_mode mode) {
+    if (encoded_size > CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES) {
+        return -EMSGSIZE;
+    }
     int ret = zmk_runtime_macro_validate_encoded(encoded, encoded_size);
     if (ret < 0) {
         return ret;
-    }
-    if (encoded_size > CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES) {
-        return -EMSGSIZE;
     }
 
     char key[RUNTIME_MACRO_MAX_KEY_LEN];

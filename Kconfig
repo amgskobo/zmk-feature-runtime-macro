@@ -24,12 +24,13 @@ config ZMK_RUNTIME_MACRO_COUNT
 config ZMK_RUNTIME_MACRO_NAME_MAX_LEN
     int "Maximum runtime macro name length (bytes, excluding NUL)"
     default 24
-    range 1 32
+    range 1 31
     help
       A macro's name is its keyspace entry key (stored as "macro/<name>").
       This bounds the name portion only; the "macro/" prefix and NUL
       terminator are accounted for separately and must still fit within
-      ZMK_CUSTOM_SETTINGS_KEY_MAX_LEN.
+      ZMK_CUSTOM_SETTINGS_KEY_MAX_LEN. Studio messages carry at most 31
+      bytes of a name.
 
 config ZMK_RUNTIME_MACRO_POOL_BYTES
     int "Shared runtime macro name+body pool size (bytes)"
@@ -51,13 +52,14 @@ config ZMK_RUNTIME_MACRO_MAX_BYTES
       keep it as small as your longest macro needs even if the pool is larger.
 
 config ZMK_RUNTIME_MACRO_QUEUE_SIZE
-    int "Maximum queued runtime macro actions"
+    int "Maximum decoded runtime macro actions"
     default 64
     range 1 128
     help
       A longer macro body (see ZMK_RUNTIME_MACRO_MAX_BYTES) can decode into
-      more queued actions; raise this alongside MAX_BYTES if long macros hit
-      this cap (playback aborts cleanly with a log warning if they do).
+      more actions; raise this alongside MAX_BYTES if decoding hits this cap.
+      This is separate from the shared ZMK behavior queue. Its admission
+      pressure is retried without discarding accepted actions or releases.
 
 config ZMK_RUNTIME_MACRO_DEFAULT_TAP_MS
     int "Default tap duration for runtime macro taps"
@@ -66,8 +68,13 @@ config ZMK_RUNTIME_MACRO_DEFAULT_TAP_MS
 
 config ZMK_RUNTIME_MACRO_TEST
     bool "Enable runtime macro test setup"
+    help
+      Owner zmk-test fixtures only. The setup creates, rewrites and deletes
+      macros at boot; never enable it in a keyboard build.
 
 config ZMK_RUNTIME_MACRO_DT_DEFAULTS_TEST
     bool "Enable devicetree default macro test setup"
+    help
+      Owner zmk-test fixtures only; never enable it in a keyboard build.
 
 endif

@@ -58,12 +58,18 @@ int zmk_runtime_macro_validate_encoded(const uint8_t *encoded, size_t size);
  * bound to `&rmacro N` is silently inert until a macro is created there. */
 int zmk_runtime_macro_play(uint32_t slot, const struct zmk_behavior_binding_event *event);
 
+/* The global tap duration, clamped to ZMK_RUNTIME_MACRO_TAP_MS_MAX; the
+ * Kconfig default if the setting cannot be read. */
+uint32_t zmk_runtime_macro_tap_ms(void);
+
 /* Create a new named macro (a fresh runtime_macros keyspace entry) with the
- * given encoded body, claiming whatever slot is currently free. Returns
- * -EEXIST if `name` already has a live macro, -ENOSPC if every slot is in
- * use or the shared name+body pool is full, -EMSGSIZE if name/encoded_size
- * exceed their configured limits, -EINVAL for a malformed encoded body.
- * `out_slot` (if non-NULL) receives the new macro's slot index. */
+ * given encoded body, claiming the lowest free slot. Returns -EEXIST if
+ * `name` already has a live macro, -ENOSPC if every slot is in use or the
+ * shared name+body pool is full, -ENAMETOOLONG if `name` exceeds
+ * CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN, -EMSGSIZE if encoded_size exceeds
+ * CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES, -EINVAL for an empty name or a
+ * malformed encoded body. `out_slot` (if non-NULL) receives the new macro's
+ * slot index. */
 int zmk_runtime_macro_create(const char *name, const uint8_t *encoded, size_t encoded_size,
                              enum zmk_custom_setting_write_mode mode, uint32_t *out_slot);
 
