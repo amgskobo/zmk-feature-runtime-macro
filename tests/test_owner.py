@@ -1,12 +1,15 @@
 import platform
-import shutil
+import os
+import tempfile
 import subprocess
 import unittest
 from pathlib import Path
 
 from dataclasses import dataclass
 
-THIS_DIR = Path(__file__).parent.resolve()
+from native_verifier import verify_native
+
+THIS_DIR = Path(__file__).resolve().parent.parent
 
 
 def run_west(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -38,20 +41,66 @@ class WestCommandsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.WEST_TOPDIR = Path(run_west(["topdir"]).stdout.strip())
-        cls.BUILD_DIR = cls.WEST_TOPDIR / "build"
+        requested_output = os.environ.get("OWNER_TEST_OUTPUT")
+        if requested_output:
+            cls.BUILD_DIR = Path(requested_output).resolve()
+            cls.BUILD_DIR.mkdir(parents=True, exist_ok=False)
+        else:
+            cls.BUILD_DIR = Path(tempfile.mkdtemp(prefix=THIS_DIR.name + "-tests-"))
+        print(f"Owner test output: {cls.BUILD_DIR}", flush=True)
 
     @unittest.skipUnless(
         platform.system() == "Linux", "zmk-test is only supported on Linux"
     )
     def test_zmk_test(self):
         test_build_dir = self.BUILD_DIR / THIS_DIR.name
-        shutil.rmtree(test_build_dir, ignore_errors=True)
 
         result = run_west(["zmk-test", "tests", "-m", ".", "-d", str(test_build_dir)])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        verify_native(test_build_dir, THIS_DIR / "tests")
         self.assertIn("PASS: test", result.stdout, result.stdout + result.stderr)
         self.assertIn("PASS: studio", result.stdout, result.stdout + result.stderr)
         self.assertNotIn("FAILED: ", result.stdout, result.stdout + result.stderr)
+
+    @unittest.skipUnless(platform.system() == "Linux", "queue boundaries require Linux")
+    def test_queue_pressure(self):
+        result = subprocess.run(
+            ["bash", "tests/queue-pressure/run.sh", str(self.WEST_TOPDIR)],
+            env={
+                **os.environ,
+                "RUNTIME_MACRO_PRESSURE_OUTPUT": os.environ.get(
+                    "RUNTIME_MACRO_PRESSURE_OUTPUT",
+                    str(self.BUILD_DIR / "queue-pressure"),
+                ),
+            },
+            capture_output=True,
+            text=True,
+            cwd=THIS_DIR,
+        )
+        (self.BUILD_DIR / "test_queue_pressure.log").write_text(
+            result.stdout + result.stderr, encoding="utf-8"
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for scenario in ("taps", "held", "delete"):
+            self.assertEqual(
+                result.stdout.count(
+                    "PASS runtime macro queue pressure scenario=" + scenario
+                ),
+                3,
+            )
+
+    @unittest.skipUnless(platform.system() == "Linux", "host build requires Linux")
+    def test_rpc_handler(self):
+        result = subprocess.run(
+            ["python3", str(THIS_DIR / "tests" / "rpc-handler" / "run.py")],
+            capture_output=True,
+            text=True,
+            cwd=THIS_DIR,
+        )
+        (self.BUILD_DIR / "test_rpc_handler.log").write_text(
+            result.stdout + result.stderr, encoding="utf-8"
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_zmk_build(self):
         self._test_zmk_build(
@@ -141,10 +190,17 @@ class WestCommandsTests(unittest.TestCase):
         self, artifacts_and_expected_build_params: dict[str, ConfigAndDeviceTree]
     ):
 
-        for artifact in artifacts_and_expected_build_params.keys():
-            shutil.rmtree(self.BUILD_DIR / artifact, ignore_errors=True)
-
-        result = run_west(["zmk-build", "tests/zmk-config", "-q", "-P", "1"])
+        result = run_west(
+            [
+                "zmk-build",
+                "tests/zmk-config",
+                "-q",
+                "-P",
+                "1",
+                "-d",
+                str(self.BUILD_DIR),
+            ]
+        )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
         for artifact, entries in artifacts_and_expected_build_params.items():

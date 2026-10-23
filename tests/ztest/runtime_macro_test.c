@@ -1,3 +1,4 @@
+#include "../support/init_result.h"
 /*
  * Copyright (c) 2026 cormoran
  *
@@ -16,11 +17,13 @@
 #include <cormoran/zmk/custom_settings.h>
 #include <cormoran/zmk/runtime_macro.h>
 
+#include "../../src/runtime_macro_codec.h"
+
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 /*
  * A minimal in-RAM fake settings backend, mirroring
- * zmk-feature-custom-settings' own src/test/custom_settings_test.c: this
+ * zmk-feature-custom-settings' own tests/ztest/custom_settings_test.c: this
  * build has no real flash-backed settings store (native_sim test builds use
  * CONFIG_SETTINGS_NONE), so without registering *some* store,
  * ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST would fail with -ENOENT
@@ -149,25 +152,14 @@ static const struct zmk_custom_setting *find_macro_setting(const char *name) {
 /*
  * Emits one ZMK_RUNTIME_MACRO_OP_DELAY op (opcode + uvarint delay_ms) whose
  * encoded length is exactly `op_size` bytes (2..6: a 1-5 byte uvarint plus
- * the opcode byte), using a delay_ms value picked purely for its uvarint
- * width - these bodies are only ever validated/stored/read back in tests
- * below, never played back, so the actual delay value is irrelevant.
+ * the opcode byte). The delay is 0, padded to that width with continuation
+ * bytes, so it stays within ZMK_RUNTIME_MACRO_DELAY_MS_MAX - these bodies
+ * only size-test validation and storage; they are never played back.
  */
 static void emit_delay_of_size(uint8_t *buf, size_t op_size) {
-    static const uint32_t value_for_size[] = {
-        [2] = 0,          // 1-byte uvarint (0-127)
-        [3] = 200,        // 2-byte uvarint (128-16383)
-        [4] = 20000,      // 3-byte uvarint (16384-2097151)
-        [5] = 3000000,    // 4-byte uvarint (2097152-268435455)
-        [6] = 0xffffffff, // 5-byte uvarint (268435456-4294967295)
-    };
-
     buf[0] = ZMK_RUNTIME_MACRO_OP_DELAY;
-    uint32_t value = value_for_size[op_size];
     for (size_t i = 1; i < op_size; i++) {
-        uint8_t byte = value & 0x7f;
-        value >>= 7;
-        buf[i] = (i + 1 < op_size) ? (byte | 0x80) : byte;
+        buf[i] = (i + 1 < op_size) ? 0x80 : 0x00;
     }
 }
 
@@ -313,6 +305,29 @@ static int test_max_bytes_boundary(void) {
     return 0;
 }
 
+/* A delay is bounded by ZMK_RUNTIME_MACRO_DELAY_MS_MAX: ZMK's shared behavior
+ * queue would otherwise hold every other macro back for as long. */
+static int test_delay_bound(void) {
+    uint8_t at_max[] = {ZMK_RUNTIME_MACRO_FORMAT_VERSION, ZMK_RUNTIME_MACRO_OP_DELAY, 0, 0, 0};
+    uint8_t over_max[sizeof(at_max)];
+    memcpy(over_max, at_max, sizeof(at_max));
+    size_t size = 2, offset = 2;
+    runtime_macro_append_uvar(at_max, sizeof(at_max), &size, ZMK_RUNTIME_MACRO_DELAY_MS_MAX);
+    runtime_macro_append_uvar(over_max, sizeof(over_max), &offset,
+                              ZMK_RUNTIME_MACRO_DELAY_MS_MAX + 1);
+
+    int ret = zmk_runtime_macro_validate_encoded(at_max, size);
+    int over_ret = zmk_runtime_macro_validate_encoded(over_max, offset);
+    int create_ret = zmk_runtime_macro_create("Long Delay", over_max, offset,
+                                              ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY, NULL);
+    if (ret != 0 || over_ret != -ERANGE || create_ret != -ERANGE) {
+        LOG_ERR("Delay bound not enforced: at=%d over=%d create=%d", ret, over_ret, create_ret);
+        return -EINVAL;
+    }
+    LOG_INF("PASS: runtime_macro_delay_bound max=%u", (unsigned)ZMK_RUNTIME_MACRO_DELAY_MS_MAX);
+    return 0;
+}
+
 /*
  * A name made entirely of digits must not be mistaken for anything else by
  * the create/find/delete path - see docs/design/keyspace-macros.md's note on
@@ -352,8 +367,9 @@ static int test_all_digit_name(void) {
 static int test_name_lifecycle(void) {
     uint8_t body[] = {ZMK_RUNTIME_MACRO_FORMAT_VERSION};
 
+    uint32_t slot = 0;
     int ret = zmk_runtime_macro_create("Lifecycle", body, sizeof(body),
-                                       ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY, NULL);
+                                       ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY, &slot);
     if (ret < 0) {
         return ret;
     }
@@ -370,6 +386,22 @@ static int test_name_lifecycle(void) {
     if (ret < 0) {
         LOG_ERR("Rename failed: %d", ret);
         return ret;
+    }
+
+    /* The keymap addresses macros by slot, so a rename must keep it. */
+    uint32_t renamed_slot = UINT32_MAX;
+    ret = zmk_runtime_macro_slot_for_name("Renamed", &renamed_slot);
+    if (ret < 0 || renamed_slot != slot) {
+        LOG_ERR("Rename moved the macro: ret=%d slot %u -> %u", ret, slot, renamed_slot);
+        return -EINVAL;
+    }
+    if (zmk_runtime_macro_rename("Renamed", "Renamed", ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY) !=
+            -EEXIST ||
+        zmk_runtime_macro_rename("No Such", "Other", ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY) !=
+            -ENOENT ||
+        zmk_runtime_macro_rename("Renamed", "", ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY) != -EINVAL) {
+        LOG_ERR("A refused rename was not refused");
+        return -EINVAL;
     }
 
     uint8_t read_back[sizeof(body)];
@@ -727,6 +759,11 @@ static int runtime_macro_test_init(void) {
         return ret;
     }
 
+    ret = test_delay_bound();
+    if (ret < 0) {
+        return ret;
+    }
+
     ret = test_all_digit_name();
     if (ret < 0) {
         return ret;
@@ -760,4 +797,4 @@ static int runtime_macro_test_init(void) {
     return 0;
 }
 
-SYS_INIT(runtime_macro_test_init, APPLICATION, 99);
+OWNER_CHECKED_SYS_INIT(runtime_macro_test_init, APPLICATION, 99);

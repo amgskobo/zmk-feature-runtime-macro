@@ -32,6 +32,15 @@
 			macro-name = "Oversized";
 			text = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 		};
+
+		/* 70 packable characters: more than one KEY_TAP_SEQUENCE step holds
+		 * (64), so the encoder must continue in a second step. It needs
+		 * CONFIG_ZMK_RUNTIME_MACRO_QUEUE_SIZE above 64 (see native_sim.conf). */
+		rmacro_default_3 {
+			compatible = "cormoran,runtime-macro-default";
+			macro-name = "Long";
+			text = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqr";
+		};
 	};
 
 	keymap {

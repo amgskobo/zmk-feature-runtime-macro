@@ -7,11 +7,11 @@ if(CONFIG_ZMK_RUNTIME_MACRO)
     )
 
     if(CONFIG_ZMK_RUNTIME_MACRO_TEST)
-        target_sources(app PRIVATE src/test/runtime_macro_test.c)
+        target_sources(app PRIVATE tests/ztest/runtime_macro_test.c)
     endif()
 
     if(CONFIG_ZMK_RUNTIME_MACRO_DT_DEFAULTS_TEST)
-        target_sources(app PRIVATE src/test/runtime_macro_dt_defaults_test.c)
+        target_sources(app PRIVATE tests/ztest/runtime_macro_dt_defaults_test.c)
     endif()
 
     if(CONFIG_ZMK_RUNTIME_MACRO_STUDIO_RPC)

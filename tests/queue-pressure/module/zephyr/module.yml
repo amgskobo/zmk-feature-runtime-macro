@@ -1,0 +1,4 @@
+name: runtime-macro-pressure-test
+build:
+  cmake: .
+  kconfig: Kconfig

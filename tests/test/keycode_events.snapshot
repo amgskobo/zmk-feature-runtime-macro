@@ -1,6 +1,7 @@
 PASS: runtime_macro_round_trip_large_body size=150 slot=1
 PASS: runtime_macro_max_bytes_boundary_ok size=256
 PASS: runtime_macro_max_bytes_boundary_rejected
+PASS: runtime_macro_delay_bound max=60000
 PASS: runtime_macro_all_digit_name_ok
 PASS: runtime_macro_name_lifecycle
 PASS: runtime_macro_pool_exhausted

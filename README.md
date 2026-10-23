@@ -208,7 +208,7 @@ This module's macro storage was rebuilt on [zmk-feature-custom-settings](https:/
 
 ```bash
 pre-commit run
-python3 -m unittest
+python3 -m unittest discover -s tests -p test_owner.py
 west zmk-build tests/zmk-config
 west zmk-test tests -m .
 cd web && npm test

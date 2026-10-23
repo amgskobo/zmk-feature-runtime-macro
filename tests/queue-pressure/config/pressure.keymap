@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: MIT
+#include <behaviors.dtsi>
+#include <behaviors/runtime_macro.dtsi>
+#include <dt-bindings/zmk/keys.h>
+#include <dt-bindings/zmk/kscan_mock.h>
+/ {
+    keymap {
+        compatible = "zmk,keymap";
+        base { bindings = <&none &none &none &none>; };
+    };
+    runtime_macro_defaults {
+        taps {
+            compatible = "cormoran,runtime-macro-default";
+            macro-name = "taps";
+            text = "abc";
+        };
+        held {
+            compatible = "cormoran,runtime-macro-default";
+            macro-name = "held";
+            bindings = <&macro_press &kp LSHFT>, <&macro_wait_time 20>,
+                       <&macro_tap &kp A>, <&macro_release &kp LSHFT>;
+        };
+    };
+};
+&kscan { events = <ZMK_MOCK_PRESS(0, 0, 30000)>; };

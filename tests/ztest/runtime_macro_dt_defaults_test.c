@@ -1,3 +1,4 @@
+#include "../support/init_result.h"
 /*
  * Copyright (c) 2026 cormoran
  *
@@ -19,7 +20,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 /*
  * A minimal in-RAM fake settings backend (same pattern as
- * src/test/runtime_macro_test.c) - needed so a PERSIST-mode write has
+ * tests/ztest/runtime_macro_test.c) - needed so a PERSIST-mode write has
  * somewhere to go, and so main()'s settings_load() call has a real load
  * pass to run (which is what triggers the DT-default seed commit callback -
  * see src/runtime_macro_dt_defaults.c). Registered at a lower SYS_INIT
@@ -172,7 +173,7 @@ static int runtime_macro_dt_defaults_pre_load_init(void) {
  * behavior_local_id_init - the DT-default seed itself already accounts for
  * that by running from settings_load(), which is always after every
  * SYS_INIT stage). */
-SYS_INIT(runtime_macro_dt_defaults_pre_load_init, APPLICATION, 98);
+OWNER_CHECKED_SYS_INIT(runtime_macro_dt_defaults_pre_load_init, APPLICATION, 98);
 
 /*
  * Runs after main()'s settings_load() to inspect the result - there is no
@@ -254,6 +255,28 @@ static int runtime_macro_dt_defaults_test_verify(void) {
         return -EINVAL;
     }
     LOG_INF("PASS: runtime_macro_dt_default_oversized_skipped");
+
+    /* "Long" types 70 characters (see the keymap): it is split into
+     * KEY_TAP_SEQUENCE steps Studio can show and edit, losing no key. */
+    ret = zmk_runtime_macro_read("Long", encoded, sizeof(encoded), &encoded_size);
+    size_t offset = 1, keys = 0, runs = 0;
+    while (ret == 0 && offset < encoded_size) {
+        size_t run = offset + 1 < encoded_size ? encoded[offset + 1] : 0;
+        if (encoded[offset] != ZMK_RUNTIME_MACRO_OP_KEY_TAP_SEQUENCE || run == 0 ||
+            run > ZMK_RUNTIME_MACRO_KEY_TAP_SEQUENCE_MAX_KEYS) {
+            ret = -EINVAL;
+            break;
+        }
+        keys += run;
+        runs++;
+        offset += 2 + run;
+    }
+    if (ret < 0 || offset != encoded_size || keys != 70 || runs != 2) {
+        LOG_ERR("DT default \"Long\" not split: ret=%d keys=%zu runs=%zu", ret, keys, runs);
+        return -EINVAL;
+    }
+    LOG_INF("PASS: runtime_macro_dt_default_long_text_split keys=%u runs=%u", (unsigned)keys,
+            (unsigned)runs);
 
     return 0;
 }
