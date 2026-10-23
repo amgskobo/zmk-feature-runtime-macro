@@ -21,7 +21,11 @@
 #include "../runtime_macro_codec.h"
 
 #include <zephyr/logging/log.h>
-LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
+#ifndef CONFIG_ZMK_RUNTIME_MACRO_FORK_LOG_LEVEL
+#define CONFIG_ZMK_RUNTIME_MACRO_FORK_LOG_LEVEL 3
+#endif
+LOG_MODULE_REGISTER(zmk_runtime_macro_fork_runtime_macro_handler,
+                    CONFIG_ZMK_RUNTIME_MACRO_FORK_LOG_LEVEL);
 
 #define RUNTIME_MACRO_RPC_MAX_STEPS 64
 

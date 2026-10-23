@@ -26,7 +26,10 @@
 
 #include "runtime_macro_codec.h"
 
-LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
+#ifndef CONFIG_ZMK_RUNTIME_MACRO_FORK_LOG_LEVEL
+#define CONFIG_ZMK_RUNTIME_MACRO_FORK_LOG_LEVEL 3
+#endif
+LOG_MODULE_REGISTER(zmk_runtime_macro_fork_runtime_macro, CONFIG_ZMK_RUNTIME_MACRO_FORK_LOG_LEVEL);
 
 #define RUNTIME_MACRO_WAIT_BEHAVIOR_NAME "runtime_macro_wait"
 
