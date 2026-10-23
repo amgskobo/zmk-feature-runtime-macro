@@ -3,7 +3,7 @@ import {
   decodeRuntimeMacro,
   encodeRuntimeMacro,
   type RuntimeMacroStep,
-} from "../src/macroCodec";
+} from "../../web/src/macroCodec";
 
 describe("runtime macro codec", () => {
   it("encodes explicit key sequence steps as packed key opcode", () => {

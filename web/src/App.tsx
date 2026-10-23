@@ -421,8 +421,8 @@ export function RuntimeMacroEditor() {
     setIsLoading(true);
     setMessage(null);
     try {
-      // RenameMacro copies the body server-side and never loses data if the
-      // rename cannot complete (see zmk_runtime_macro_rename's doc comment).
+      // RenameMacro renames in place: the macro keeps its slot (and so its
+      // keymap binding) and body, and is unchanged if the rename fails.
       await callRPC(
         Request.create({
           renameMacro: {

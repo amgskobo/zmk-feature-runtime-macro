@@ -12,3 +12,13 @@ npm run build
 The protobuf schema is defined in `../proto/cormoran/runtime_macro/runtime_macro.proto`.
 
 The UI edits macro names and compact encoded macro bodies. It can import/export the supported Keyboard Abyss macro step subset: `down`, `up`, `tap`, and `delay`.
+
+## Console privacy
+
+The local Vite plugin replaces the two locked Studio SDKs' exception log
+arguments with fixed error categories. Messages, stacks, causes, device/profile
+names and arbitrary error names are not SDK console arguments. New SDK console
+sites stop the build for privacy review. Excluding the SDKs from development
+prebundling applies the same transform in development and production. Transport,
+exception propagation and visible UI messages are preserved. Browser/framework
+diagnostics and unrelated browser extensions remain separate domains.

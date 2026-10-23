@@ -4,11 +4,11 @@ import {
   createConnectedMockZMKApp,
   ZMKAppProvider,
 } from "@cormoran/zmk-studio-react-hook/testing";
-import { RuntimeMacroEditor, SUBSYSTEM_IDENTIFIER } from "../src/App";
+import { RuntimeMacroEditor, SUBSYSTEM_IDENTIFIER } from "../../web/src/App";
 import {
   Request,
   Response,
-} from "../src/proto/cormoran/runtime_macro/runtime_macro";
+} from "../../web/src/proto/cormoran/runtime_macro/runtime_macro";
 
 jest.mock("@zmkfirmware/zmk-studio-ts-client", () => ({
   call_rpc: jest.fn(),
@@ -24,7 +24,7 @@ describe("RuntimeMacroEditor Component", () => {
         _connection: unknown,
         rpcRequest: {
           custom?: { call?: { subsystemIndex?: number; payload?: Uint8Array } };
-        }
+        },
       ) => {
         const payload = rpcRequest.custom?.call?.payload;
         if (!payload) {
@@ -86,7 +86,7 @@ describe("RuntimeMacroEditor Component", () => {
         return {
           custom: { call: { payload: Response.encode(response).finish() } },
         };
-      }
+      },
     );
   };
 
@@ -106,11 +106,11 @@ describe("RuntimeMacroEditor Component", () => {
       render(
         <ZMKAppProvider value={mockZMKApp}>
           <RuntimeMacroEditor />
-        </ZMKAppProvider>
+        </ZMKAppProvider>,
       );
 
       expect(
-        screen.getByRole("heading", { name: "Macros" })
+        screen.getByRole("heading", { name: "Macros" }),
       ).toBeInTheDocument();
       expect(screen.getByText(/Refresh/i)).toBeInTheDocument();
     });
@@ -124,7 +124,7 @@ describe("RuntimeMacroEditor Component", () => {
       render(
         <ZMKAppProvider value={mockZMKApp}>
           <RuntimeMacroEditor />
-        </ZMKAppProvider>
+        </ZMKAppProvider>,
       );
 
       await waitFor(() => {
@@ -138,7 +138,7 @@ describe("RuntimeMacroEditor Component", () => {
         expect(rpcRequests.some((request) => request.saveMacros)).toBe(true);
       });
       expect(
-        screen.getByText("Runtime macro settings saved")
+        screen.getByText("Runtime macro settings saved"),
       ).toBeInTheDocument();
 
       await user.click(screen.getByRole("button", { name: "Discard Pending" }));
@@ -147,7 +147,7 @@ describe("RuntimeMacroEditor Component", () => {
         expect(rpcRequests.some((request) => request.discardMacros)).toBe(true);
       });
       expect(
-        screen.getByText("Runtime macro settings discarded")
+        screen.getByText("Runtime macro settings discarded"),
       ).toBeInTheDocument();
     });
   });
@@ -162,7 +162,7 @@ describe("RuntimeMacroEditor Component", () => {
       render(
         <ZMKAppProvider value={mockZMKApp}>
           <RuntimeMacroEditor />
-        </ZMKAppProvider>
+        </ZMKAppProvider>,
       );
 
       await waitFor(() => {
@@ -172,15 +172,15 @@ describe("RuntimeMacroEditor Component", () => {
       const user = userEvent.setup();
       await user.type(
         screen.getByPlaceholderText("New macro name"),
-        "New Macro"
+        "New Macro",
       );
       await user.click(screen.getByRole("button", { name: "Create" }));
 
       await waitFor(() => {
         expect(
           rpcRequests.some(
-            (request) => request.createMacro?.name === "New Macro"
-          )
+            (request) => request.createMacro?.name === "New Macro",
+          ),
         ).toBe(true);
       });
     });
@@ -194,7 +194,7 @@ describe("RuntimeMacroEditor Component", () => {
       render(
         <ZMKAppProvider value={mockZMKApp}>
           <RuntimeMacroEditor />
-        </ZMKAppProvider>
+        </ZMKAppProvider>,
       );
 
       await waitFor(() => {
@@ -207,8 +207,8 @@ describe("RuntimeMacroEditor Component", () => {
       await waitFor(() => {
         expect(
           rpcRequests.some(
-            (request) => request.deleteMacro?.name === "Test Macro"
-          )
+            (request) => request.deleteMacro?.name === "Test Macro",
+          ),
         ).toBe(true);
       });
     });
@@ -222,7 +222,7 @@ describe("RuntimeMacroEditor Component", () => {
       render(
         <ZMKAppProvider value={mockZMKApp}>
           <RuntimeMacroEditor />
-        </ZMKAppProvider>
+        </ZMKAppProvider>,
       );
 
       const nameInput = await screen.findByDisplayValue("Test Macro");
@@ -237,8 +237,8 @@ describe("RuntimeMacroEditor Component", () => {
           rpcRequests.some(
             (request) =>
               request.renameMacro?.oldName === "Test Macro" &&
-              request.renameMacro?.newName === "Renamed Macro"
-          )
+              request.renameMacro?.newName === "Renamed Macro",
+          ),
         ).toBe(true);
       });
     });
@@ -247,12 +247,12 @@ describe("RuntimeMacroEditor Component", () => {
   describe("Large macro support", () => {
     it("respects a dynamic max_macro_bytes and shows shared pool usage", async () => {
       const { call_rpc } = jest.requireMock(
-        "@zmkfirmware/zmk-studio-ts-client"
+        "@zmkfirmware/zmk-studio-ts-client",
       );
       (call_rpc as jest.Mock).mockImplementation(
         async (
           _connection: unknown,
-          rpcRequest: { custom?: { call?: { payload?: Uint8Array } } }
+          rpcRequest: { custom?: { call?: { payload?: Uint8Array } } },
         ) => {
           const payload = rpcRequest.custom?.call?.payload;
           if (!payload) {
@@ -305,7 +305,7 @@ describe("RuntimeMacroEditor Component", () => {
           return {
             custom: { call: { payload: Response.encode(response).finish() } },
           };
-        }
+        },
       );
 
       const mockZMKApp = createConnectedMockZMKApp({
@@ -316,7 +316,7 @@ describe("RuntimeMacroEditor Component", () => {
       render(
         <ZMKAppProvider value={mockZMKApp}>
           <RuntimeMacroEditor />
-        </ZMKAppProvider>
+        </ZMKAppProvider>,
       );
 
       await waitFor(() => {
@@ -328,7 +328,7 @@ describe("RuntimeMacroEditor Component", () => {
       expect(screen.getByText(/\/256 B/)).toBeInTheDocument();
       // Shared pool occupancy is surfaced from MacroGlobalSettings.
       expect(
-        screen.getByText(/Shared macro pool: 100\/1024 B used/)
+        screen.getByText(/Shared macro pool: 100\/1024 B used/),
       ).toBeInTheDocument();
     });
   });
@@ -343,14 +343,14 @@ describe("RuntimeMacroEditor Component", () => {
       render(
         <ZMKAppProvider value={mockZMKApp}>
           <RuntimeMacroEditor />
-        </ZMKAppProvider>
+        </ZMKAppProvider>,
       );
 
       expect(
-        screen.getByText(/Subsystem "cormoran__runtime_macro" was not found/i)
+        screen.getByText(/Subsystem "cormoran__runtime_macro" was not found/i),
       ).toBeInTheDocument();
       expect(
-        screen.getByText(/runtime macro RPC enabled/i)
+        screen.getByText(/runtime macro RPC enabled/i),
       ).toBeInTheDocument();
     });
   });
