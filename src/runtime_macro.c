@@ -120,7 +120,11 @@ BUILD_ASSERT((uint64_t)CONFIG_ZMK_RUNTIME_MACRO_QUEUE_SIZE *(ZMK_RUNTIME_MACRO_T
  * COUNT * (max_key_len + MAX_BYTES)) - see
  * ZMK_CUSTOM_SETTING_KEYSPACE_DEFINE_WITH_POOL_SIZE - so a handful of large
  * macros or many small ones share one budget, matching the pre-migration
- * shared-pool property (docs/design/large-macros-shared-pool.md). */
+ * shared-pool property (docs/design/large-macros-shared-pool.md).
+ *
+ * Reading needs an unlocked Studio too: a body can hold typed text, and the
+ * generic custom settings RPC (an unsecured subsystem) would otherwise return
+ * it while Studio is locked, past this module's own GetMacro unlock rule. */
 #define RUNTIME_MACRO_MAX_KEY_LEN                                                                  \
     (sizeof(ZMK_RUNTIME_MACRO_KEY_PREFIX) - 1 + CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN + 1)
 
@@ -128,7 +132,7 @@ ZMK_CUSTOM_SETTING_KEYSPACE_DEFINE_WITH_POOL_SIZE(
     runtime_macros, ZMK_RUNTIME_MACRO_SUBSYSTEM_ID, ZMK_RUNTIME_MACRO_KEY_PREFIX,
     ZMK_CUSTOM_SETTING_VALUE_TYPE_BYTES, CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES,
     RUNTIME_MACRO_MAX_KEY_LEN, CONFIG_ZMK_RUNTIME_MACRO_COUNT, CONFIG_ZMK_RUNTIME_MACRO_POOL_BYTES,
-    ZMK_CUSTOM_SETTING_CONFIDENTIALITY_RPC_PUBLIC, ZMK_CUSTOM_SETTING_PERMISSION_UNSECURE,
+    ZMK_CUSTOM_SETTING_CONFIDENTIALITY_RPC_PUBLIC, ZMK_CUSTOM_SETTING_PERMISSION_SECURE,
     ZMK_CUSTOM_SETTING_PERMISSION_SECURE, ZMK_CUSTOM_SETTING_NO_CONSTRAINT);
 
 ZMK_CUSTOM_SETTING_DEFINE(runtime_macro_tap_ms, ZMK_RUNTIME_MACRO_SUBSYSTEM_ID,
