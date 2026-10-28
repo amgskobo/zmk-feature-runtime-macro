@@ -22,3 +22,10 @@ sites stop the build for privacy review. Excluding the SDKs from development
 prebundling applies the same transform in development and production. Transport,
 exception propagation and visible UI messages are preserved. Browser/framework
 diagnostics and unrelated browser extensions remain separate domains.
+
+## Dependency security
+
+`package.json` overrides the Studio client's transitive `protobufjs` dependency
+to `7.6.5`, including the patched UTF-8 helper. Use `npm ci` with this lockfile.
+After changing dependencies, run `npm audit --omit=dev`, the Web tests and the
+production build.

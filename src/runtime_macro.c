@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include "runtime_macro_timeout.h"
 #include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -450,7 +451,9 @@ static void runtime_macro_finish_playback(uint32_t active_ms) {
         return;
     }
 
-    k_work_schedule(&player.clear_active_work, K_MSEC(active_ms + 1));
+    k_work_schedule(
+        &player.clear_active_work,
+        K_TICKS(runtime_macro_timeout_ticks(active_ms + 1U, CONFIG_SYS_CLOCK_TICKS_PER_SEC)));
 }
 
 static void runtime_macro_play_work_handler(struct k_work *work) {

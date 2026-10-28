@@ -1,0 +1,21 @@
+[
+    {
+        "configs":  [
+                        "CONFIG_ZMK_RUNTIME_MACRO_TEST"
+                    ],
+        "fixtures":  [
+                         "test",
+                         "studio"
+                     ],
+        "hook":  "runtime_macro_test_init"
+    },
+    {
+        "configs":  [
+                        "CONFIG_ZMK_RUNTIME_MACRO_DT_DEFAULTS_TEST"
+                    ],
+        "fixtures":  [
+                         "dt-defaults"
+                     ],
+        "hook":  "runtime_macro_dt_defaults_pre_load_init"
+    }
+]

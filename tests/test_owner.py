@@ -8,11 +8,20 @@ from pathlib import Path
 from dataclasses import dataclass
 
 from native_verifier import verify_native
+from test_native_verifier import NativeVerifierContract as NativeVerifierContract
+from test_timeout_width import TimeoutWidth as TimeoutWidth
+
+from test_build_budget import BuildBudgetContract as BuildBudgetContract
 
 THIS_DIR = Path(__file__).resolve().parent.parent
 
 
 def run_west(args: list[str]) -> subprocess.CompletedProcess[str]:
+    if args and args[0] == "zmk-build":
+        parallelism = int(os.environ.get("OWNER_TEST_BUILD_PARALLELISM", "1"))
+        if parallelism < 1:
+            raise ValueError("OWNER_TEST_BUILD_PARALLELISM must be a positive integer")
+        args = [args[0], "--parallelism", str(parallelism), *args[1:]]
     return subprocess.run(
         ["west", *args],
         capture_output=True,

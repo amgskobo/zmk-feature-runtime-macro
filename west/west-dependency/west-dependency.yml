@@ -5,5 +5,6 @@ manifest:
       url-base: https://github.com/zmkfirmware
   projects:
     - name: zmk-feature-custom-settings
-      url: https://github.com/cormoran/zmk-feature-custom-settings
-      revision: main
+      # Same-slot rename is part of this module's public behavior contract.
+      url: https://github.com/amgskobo/zmk-feature-custom-settings
+      revision: c2f2dcd607bb29649d67d91625cec407cc184c51

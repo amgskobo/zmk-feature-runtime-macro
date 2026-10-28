@@ -26,16 +26,31 @@ Tap duration is a scalar custom setting, `tap_ms` (0 to 10000 ms), in the same s
 
 ## User Guide
 
-Add the module to `config/west.yml`.
+This fork requires Custom Settings with
+`zmk_custom_setting_keyspace_rename()`: renaming must preserve the macro's slot,
+body and storage identity. The production import and isolated tests both select
+`amgskobo/zmk-feature-custom-settings` at
+`c2f2dcd607bb29649d67d91625cec407cc184c51`. The older cormoran
+`c6a7fef3a3be3d3ace5de9a4b0628c6418cd1f3f` does not provide that API.
+Do not substitute create/delete for rename, since that can move the slot used
+by an existing `&rmacro N` binding.
+
+For local development, select this checkout and the matching Custom Settings
+checkout as explicit local module overrides in your build workflow. Remote
+installation requires publication of the selected Custom Settings commit and
+these Runtime Macro manifest changes first. The following is the published-fork
+selection; a local compatibility result does not establish remote availability.
 
 ```yml
 manifest:
   remotes:
+    - name: amgskobo
+      url-base: https://github.com/amgskobo
     - name: cormoran
       url-base: https://github.com/cormoran
   projects:
     - name: zmk-feature-runtime-macro
-      remote: cormoran
+      remote: amgskobo
       revision: main
       import: true
     - name: zmk
@@ -98,7 +113,7 @@ Memory updates become pending custom setting changes; use **Save Pending** to pe
 
 **Unlocking:** browsing the macro list works without unlocking Studio - `ListMacros` (and `GetMacroGlobalSettings`) return only metadata (slot, name, size, unsaved flag, and global limits), never a macro's contents. Reading a specific macro's steps (`GetMacro`) or making any change (create/edit/rename/delete/reset/save/discard, `set_tap_ms`) requires an unlocked Studio session and is otherwise rejected with an "unlock required" error. The same holds for the generic custom settings RPC: the macro keyspace is registered with secure read and write permission, so it returns no macro body while Studio is locked.
 
-Create/Delete/Rename are macro-domain RPCs on this module's own subsystem (`CreateMacro`/`DeleteMacro`/`RenameMacro`), addressing a macro by its **name**. A client never needs to know that macros are stored as zmk-feature-custom-settings keyspace entries under the `macro/` prefix - the storage is an implementation detail, and no separate custom-settings RPC call is required. `RenameMacro` renames the entry in place in one write: the macro keeps its slot (so `&rmacro N` bindings keep working) and its body, and stays unchanged if the rename cannot complete. This uses `zmk_custom_setting_keyspace_rename()` from the custom settings fork.
+Create/Delete/Rename are macro-domain RPCs on this module's own subsystem (`CreateMacro`/`DeleteMacro`/`RenameMacro`), addressing a macro by its **name**. A client never needs to know that macros are stored as zmk-feature-custom-settings keyspace entries under the `macro/` prefix - the storage is an implementation detail, and no separate custom-settings RPC call is required. `RenameMacro` renames the entry in place in one write: the macro keeps its slot (so `&rmacro N` bindings keep working) and its body. Validation or allocation refusal leaves it unchanged. With `persist: true`, a storage error retains the new name in RAM as an unsaved change. A backend refusal before writing keeps the previous durable name, as the owner's controlled backend verifies; arbitrary physical storage errors provide no atomic durability guarantee. Save retries the rename and discard reloads the persisted name. No change event is raised for that failed write, so API clients must reread after a persistence error. The current Web editor renames in memory (`persist: false`) and then uses Save Pending for persistence. This uses `zmk_custom_setting_keyspace_rename()` from the custom settings fork.
 
 `ResetMacro` restores a macro to its compile-time state, addressing it by **slot number**: if a [devicetree default](#devicetree-default-macros) declares a macro of the same name, its body is overwritten with that default; otherwise the macro is deleted (a macro that only ever existed at runtime "resets" to not existing). Like the other body-editing RPCs it takes a `persist` flag - leave it off for a session-only reset (a persisted devicetree default is re-seeded next boot anyway), or set it to write the reset straight to flash.
 
@@ -198,7 +213,7 @@ If the pool is full, creating or updating a macro fails and the Web UI shows **"
 
 ## Upgrading from a pre-keyspace release
 
-This module's macro storage was rebuilt on [zmk-feature-custom-settings](https://github.com/cormoran/zmk-feature-custom-settings)' keyspace feature (see [`docs/design/keyspace-macros.md`](docs/design/keyspace-macros.md)). This is a **breaking storage-schema and RPC change**:
+This module's macro storage uses the keyspace feature of [zmk-feature-custom-settings](https://github.com/cormoran/zmk-feature-custom-settings), with the shared pool and limits described above. Upgrading from the former numeric-slot storage is a **breaking storage-schema and RPC change**:
 
 - Previously-recorded macros (stored per numeric slot as `names.<i>` / `macros.<i>`) are **not migrated** and are silently dropped on upgrade - recreate your macros after flashing.
 - Macros are now created/deleted/renamed by **name**, not by a fixed slot index; a keymap binding's numeric parameter is now an assigned slot you look up after creating a macro, not a slot you write directly into.

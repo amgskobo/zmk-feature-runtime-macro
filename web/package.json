@@ -9,9 +9,9 @@
     "lint": "eslint . && npm run lint:tests && prettier --check . ../tests/web",
     "preview": "vite preview",
     "generate": "buf generate",
-    "test": "jest --config ../tests/web/jest.config.ts",
-    "test:watch": "jest --config ../tests/web/jest.config.ts --watch",
-    "test:coverage": "jest --config ../tests/web/jest.config.ts --coverage",
+    "test": "buf generate && jest --config ../tests/web/jest.config.ts",
+    "test:watch": "npm test -- --watch",
+    "test:coverage": "npm test -- --coverage",
     "format": "prettier --write . ../tests/web",
     "lint:tests": "cd .. && node web/node_modules/eslint/bin/eslint.js --config tests/web/eslint.config.mjs tests/web"
   },
@@ -51,6 +51,7 @@
     "vite": "npm:rolldown-vite@7.2.5"
   },
   "overrides": {
-    "vite": "npm:rolldown-vite@7.2.5"
+    "vite": "npm:rolldown-vite@7.2.5",
+    "protobufjs": "7.6.5"
   }
 }

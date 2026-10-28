@@ -55,7 +55,19 @@ KEY_TAP_SEQUENCE steps of at most 64 keys so Studio can open it.
 
 Renaming keeps a macro's slot, so `&rmacro N` bindings keep working. This
 needs the `zmk_custom_setting_keyspace_rename()` API of the custom settings
-fork; the pinned upstream test dependency does not have it yet.
+fork. Both the production import and isolated test manifest pin
+`amgskobo/zmk-feature-custom-settings` at
+`c2f2dcd607bb29649d67d91625cec407cc184c51`, which contains the API.
+The previous cormoran `c6a7fef` selection does not implement it and fails enabled
+board/native links; those failures remain valid regression evidence.
+
+When the selected fork commit is available only in a local Git repository,
+populate the fresh isolated dependency checkout from that repository and detach
+at the exact declared commit. Verify the resolved manifest, clean checkout,
+source hashes and absence of implicit CMake overrides before running the same
+canonical command. Do not replace the declared manifest with another selection
+or copy a dirty sibling into the dependency. This checks local compatibility;
+remote CI still requires publishing the selected commit and consumer changes.
 
 ## Reproducible isolated checks
 
@@ -78,3 +90,43 @@ and Web jobs. Local full pre-commit execution may run those functional hooks;
 prepare Web dependencies with the normal package lifecycle first where present.
 A successful hook exit must also leave source inputs unchanged. Snapshot and
 event-pattern bytes are excluded from whitespace rewriting.
+
+## 32-bit timeout arithmetic
+
+Variable millisecond reservations use a private owner header and preserve the
+full uint32 input range, exact ceiling and configured kernel tick ABI. Fractional
+products and divisions use uint32; only the required tick result is widened.
+Zero/forever handling, callback ownership, cancellation and output policy remain
+at their existing call sites. This introduces no new limit on timer settings.
+
+`test_timeout_width.py` runs in the canonical host/owner entry. It compares every
+0..65535 interval, full-width boundaries and 65536 deterministic full-width
+samples at 14 rates against an independent wide oracle, for both tick forms.
+Full retains optimized, ASan/UBSan, measured nonzero complete header line/branch
+coverage and m32 object/numeric execution. Four identified arithmetic faults
+must produce three qualified assertion failures per tick form. A numerically
+correct wide-divider control must fail the object-width guard. Existing output,
+state, timing and supported-core assertions remain enabled. Kernel/physical
+acceptance remains separate from this numerical and object-code check.
+
+The owner command boundary limits `zmk-build` to one target at a time by
+default. `OWNER_TEST_BUILD_PARALLELISM` selects an explicit positive target
+count; account for compiler jobs and concurrent owners in the global budget.
+`tests/test_build_budget.py` checks default/explicit forwarding and rejects
+invalid budgets before launching west. The canonical owner entry includes
+these controls without dropping any native or board scenario.
+
+Native result admission requires every `native_sim.keymap` fixture to have a
+matching binary. `required_hooks.json` names the expected checked initialization
+hooks and required feature/role configuration. Fixture-bound declarations also
+reject missing configuration when both the request and build omit it; excluded
+roles cannot replace the requested role. The verifier retains all three raw
+runs before comparing unchanged ordered snapshots and rejects logged failures,
+fatal output and missing/nonzero completions. `tests/test_native_verifier.py`
+owns eleven real-ELF admission controls, including a deliberately missing
+native scenario, wrong-role and unrelated-fixture controls.
+
+`bash tests/run-web.sh` is the canonical schema-generation/Web test entry.
+It runs all configured Jest scenarios in one worker process. The pre-commit
+Jest hook dispatches this same owner entry so nested workers do not multiply
+the global container budget. Build and lint retain their separate package entries.

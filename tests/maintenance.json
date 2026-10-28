@@ -19,5 +19,17 @@
   "gaps": [
     "Physical USB/BLE/split delivery, timing, power and retention require matching production-board evidence."
   ],
-  "native_verification": "tests/native_verifier.py: actual exit, registered test completion, raw ordered logs, unchanged snapshots, identical binary repeated three times."
+  "native_verification": "tests/native_verifier.py: actual exit, registered test completion, raw ordered logs, unchanged snapshots, identical binary repeated three times.",
+  "custom_settings_dependency": {
+    "url": "https://github.com/amgskobo/zmk-feature-custom-settings",
+    "revision": "c2f2dcd607bb29649d67d91625cec407cc184c51",
+    "required_contract": "Same-slot keyspace rename, payload/storage identity and existing memory/persist lifecycle; both production import and isolated tests select this exact dependency.",
+    "regression": "Previous cormoran c6a7fef dependency lacks rename and fails enabled ARM/native links. Existing lifecycle fixtures retain same-slot rename assertions.",
+    "publication": "Local exact-commit compatibility does not establish remote availability; publish the selected dependency commit and consumer changes before remote CI/installation."
+  },
+  "timeout_width": {
+    "entry": "python3 -m unittest discover -s tests -p test_timeout_width.py -v",
+    "contract": "Full uint32 milliseconds, exact ceiling and configured kernel tick ABI; independent wide oracle and identified math/width controls",
+    "physical": "NOT RUN"
+  }
 }
