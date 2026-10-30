@@ -22,14 +22,23 @@
   "native_verification": "tests/native_verifier.py: actual exit, registered test completion, raw ordered logs, unchanged snapshots, identical binary repeated three times.",
   "custom_settings_dependency": {
     "url": "https://github.com/amgskobo/zmk-feature-custom-settings",
-    "revision": "c2f2dcd607bb29649d67d91625cec407cc184c51",
-    "required_contract": "Same-slot keyspace rename, payload/storage identity and existing memory/persist lifecycle; both production import and isolated tests select this exact dependency.",
+    "revision": "b91a8ceb0a57a0cf41b34270752d79463e2848fa",
+    "required_contract": "Same-slot keyspace rename, payload/storage identity and existing memory/persist lifecycle; both production import and isolated tests select this exact dependency. The selected registry also serializes mutations and retains notification targets through dispatch.",
     "regression": "Previous cormoran c6a7fef dependency lacks rename and fails enabled ARM/native links. Existing lifecycle fixtures retain same-slot rename assertions.",
-    "publication": "Local exact-commit compatibility does not establish remote availability; publish the selected dependency commit and consumer changes before remote CI/installation."
+    "publication": "The selected exact commit is published at the declared fork URL; prepare and verify that revision explicitly in the isolated container workspace."
   },
   "timeout_width": {
     "entry": "python3 -m unittest discover -s tests -p test_timeout_width.py -v",
     "contract": "Full uint32 milliseconds, exact ceiling and configured kernel tick ABI; independent wide oracle and identified math/width controls",
     "physical": "NOT RUN"
+  },
+  "web_session": {
+    "fixtures": [
+      "tests/web/sessionLifecycle.spec.tsx",
+      "tests/web/macroCodecBounds.spec.ts"
+    ],
+    "contract": "Session retirement, latest selection, independent busy ownership, cleared deadlines and recoverable validated edits; uint32 overflow rejection preserves valid decoder inputs.",
+    "controls": "Failing original editor/decoder; existing fractional-tap rejection, valid decoder boundaries, StrictMode, timeout and unrelated provider updates remain positive controls.",
+    "limits": "Controlled DOM/RPC transport; no physical delivery or rollback guarantee for requests already dispatched. Multi-request body writes remain non-atomic."
   }
 }

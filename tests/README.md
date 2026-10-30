@@ -57,17 +57,18 @@ Renaming keeps a macro's slot, so `&rmacro N` bindings keep working. This
 needs the `zmk_custom_setting_keyspace_rename()` API of the custom settings
 fork. Both the production import and isolated test manifest pin
 `amgskobo/zmk-feature-custom-settings` at
-`c2f2dcd607bb29649d67d91625cec407cc184c51`, which contains the API.
+`b91a8ceb0a57a0cf41b34270752d79463e2848fa`, which contains the API.
 The previous cormoran `c6a7fef` selection does not implement it and fails enabled
 board/native links; those failures remain valid regression evidence.
 
-When the selected fork commit is available only in a local Git repository,
-populate the fresh isolated dependency checkout from that repository and detach
-at the exact declared commit. Verify the resolved manifest, clean checkout,
-source hashes and absence of implicit CMake overrides before running the same
-canonical command. Do not replace the declared manifest with another selection
-or copy a dirty sibling into the dependency. This checks local compatibility;
-remote CI still requires publishing the selected commit and consumer changes.
+Prepare the selected public dependency commit in a fresh isolated container
+workspace. Verify the resolved production and test manifests, clean checkout,
+source hashes and absence of implicit CMake overrides before the canonical run.
+Do not replace the declared selection or copy a dirty sibling into the dependency.
+Dependency preparation is explicit; ordinary tests do not fetch or update inputs.
+The selected registry includes mutation serialization and notification lifetime
+fixes as well as rename. This owner still tests its own playback/RPC boundaries;
+registry tests and physical acceptance are separate evidence.
 
 ## Reproducible isolated checks
 
@@ -99,7 +100,7 @@ products and divisions use uint32; only the required tick result is widened.
 Zero/forever handling, callback ownership, cancellation and output policy remain
 at their existing call sites. This introduces no new limit on timer settings.
 
-`test_timeout_width.py` runs in the canonical host/owner entry. It compares every
+`test_timeout_width.py` runs in the canonical container owner entry. It compares every
 0..65535 interval, full-width boundaries and 65536 deterministic full-width
 samples at 14 rates against an independent wide oracle, for both tick forms.
 Full retains optimized, ASan/UBSan, measured nonzero complete header line/branch
@@ -130,3 +131,34 @@ native scenario, wrong-role and unrelated-fixture controls.
 It runs all configured Jest scenarios in one worker process. The pre-commit
 Jest hook dispatches this same owner entry so nested workers do not multiply
 the global container budget. Build and lint retain their separate package entries.
+
+## Web request lifetime and numeric boundaries
+
+`web/sessionLifecycle.spec.tsx` exercises the production editor through the
+locked provider and generated wire messages with a controlled RPC transport.
+Connection, subsystem-index and catalog changes must reset forms and retire
+pending creates and partially dispatched body writes. Latest-selection and
+refresh controls retain the chosen macro; independent reads cannot release a
+pending write's busy state. Create and rename keep the resulting macro selected.
+Unmount and completion clear request deadlines; the five-second timeout still
+reports a failure. Synchronous transport errors and rejected promises release
+their deadlines and restore controls, including rejection with undefined, null
+or false. These values must never be decoded as a successful reply. StrictMode
+replay and unrelated provider updates remain usable.
+
+The same fixture keeps the editor alive for invalid delays, binding fields and
+packed keys, refuses writes before resize, and permits recovery after correction.
+Fractional and out-of-range tap durations never reach the transport. The
+fractional-tap case preserves an existing rejection as a positive control.
+`web/macroCodecBounds.spec.ts` rejects overflowing fifth varint bytes in delay,
+binding and packed-sequence lengths, while retaining valid full uint32 decoding
+and the firmware-compatible overlong-zero form. Editor delay limits remain a
+separate rule from the raw binary codec's uint32 range.
+
+The regressions fail against the original editor/decoder before the fixes;
+valid decoder inputs, timeout reporting, StrictMode and unrelated updates are
+positive controls. These are controlled DOM/transport checks. They do not
+establish physical serial delivery or rollback of already-dispatched requests.
+Retirement stops subsequent requests; resize/step writes remain non-atomic.
+Run build and lint separately with `npm --prefix web run build` and
+`npm --prefix web run lint` in the prepared container.

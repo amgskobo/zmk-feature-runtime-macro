@@ -30,16 +30,16 @@ This fork requires Custom Settings with
 `zmk_custom_setting_keyspace_rename()`: renaming must preserve the macro's slot,
 body and storage identity. The production import and isolated tests both select
 `amgskobo/zmk-feature-custom-settings` at
-`c2f2dcd607bb29649d67d91625cec407cc184c51`. The older cormoran
+`b91a8ceb0a57a0cf41b34270752d79463e2848fa`. The older cormoran
 `c6a7fef3a3be3d3ace5de9a4b0628c6418cd1f3f` does not provide that API.
 Do not substitute create/delete for rename, since that can move the slot used
 by an existing `&rmacro N` binding.
 
-For local development, select this checkout and the matching Custom Settings
-checkout as explicit local module overrides in your build workflow. Remote
-installation requires publication of the selected Custom Settings commit and
-these Runtime Macro manifest changes first. The following is the published-fork
-selection; a local compatibility result does not establish remote availability.
+The selected Custom Settings commit is published in that fork. It includes
+same-slot rename, serialized registry mutations and notification-target lifetime
+handling. Use the Runtime Macro branch below with the tested DYA revision;
+the isolated manifest pins that same core. Local development may instead select
+these exact revisions as explicit module overrides in the build workflow.
 
 ```yml
 manifest:
@@ -51,11 +51,11 @@ manifest:
   projects:
     - name: zmk-feature-runtime-macro
       remote: amgskobo
-      revision: main
+      revision: fix/review-hardening
       import: true
     - name: zmk
       remote: cormoran
-      revision: main+custom-studio-protocol
+      revision: e5c9b6915b56801193e359dd9bad4a167ce0d1b8
       import:
         file: app/west.yml
 ```
@@ -108,6 +108,23 @@ Open the Web UI from the ZMK Studio custom subsystem list, connect over serial, 
 2. Edit its steps, then use **Write Memory** for a temporary update or **Save** for persistent storage.
 3. Bind that macro's slot number (`&rmacro <slot>`) in your keymap.
 4. **Rename**, **Reset to Default**, or **Delete** a macro any time from the editor.
+
+The editor starts fresh when the RPC connection, subsystem index or discovered
+subsystem catalog changes. It retires pending editor requests, clears their
+deadlines and stops sending subsequent steps from an old write. An RPC already
+sent may still take effect on the device. A body write uses separate resize and
+step requests; connection retirement, timeout or any other failure does not roll
+back requests already accepted. Reconnect and reread before retrying a failed
+write. This UI behavior does not make multi-request writes atomic or establish
+general concurrent registry publication during playback.
+
+Within one session, the latest macro selection owns the displayed body. A slow
+older reply or refresh cannot replace that selection, and controls stay busy
+until every outstanding editor operation has finished. Invalid step edits show
+an error without closing the editor; body writes remain disabled until corrected.
+Delays must be whole milliseconds from 0 through 60000, and `tap_ms` must be a
+whole number from 0 through 10000. These bounds are checked before sending the
+corresponding write.
 
 Memory updates become pending custom setting changes; use **Save Pending** to persist all pending runtime macro changes, or **Discard Pending** to restore the saved values. Macros with such in-memory-only changes are marked with an "unsaved" dot in the list (the `ListMacros` response reports this per macro as `has_unsaved_changes`).
 

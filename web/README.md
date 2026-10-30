@@ -2,6 +2,9 @@
 
 React + TypeScript UI for editing runtime macros over the custom Studio RPC subsystem `cormoran__runtime_macro`.
 
+Run these entries inside a prepared Docker environment from `web/`; keep
+installed dependencies and build outputs in the container or a named volume.
+
 ```bash
 npm ci
 npm run generate
@@ -29,3 +32,23 @@ diagnostics and unrelated browser extensions remain separate domains.
 to `7.6.5`, including the patched UTF-8 helper. Use `npm ci` with this lockfile.
 After changing dependencies, run `npm audit --omit=dev`, the Web tests and the
 production build.
+
+## Editor request lifetime
+
+Changing the connection or discovered subsystem catalog starts a fresh editor
+and retires pending work. Late responses cannot restore an old form or continue
+its remaining step writes. The latest selection owns the displayed body, and
+finishing another read does not enable writes while an earlier write is pending.
+Every request has a five-second deadline that is cleared on completion,
+replacement or unmount.
+
+A request already sent may still modify the device. Body updates use separate
+resize and step RPCs and have no transaction rollback; reread after reconnect or
+failure before retrying. Session retirement provides no device-side cancellation.
+
+Invalid edits show an error and keep the editor available for correction. Delay
+steps accept integer milliseconds from 0 through 60000; tap duration accepts
+0 through 10000. Binding and packed-key validation runs before any body resize.
+The binary decoder separately rejects uint32 overflow without narrowing valid
+uint32 values. Owner fixtures in `../tests/web/` cover these boundaries and
+session behavior; `bash tests/run-web.sh` from the repository root runs them.
