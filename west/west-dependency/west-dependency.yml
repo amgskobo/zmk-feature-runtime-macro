@@ -7,4 +7,4 @@ manifest:
     - name: zmk-feature-custom-settings
       # Same-slot rename is part of this module's public behavior contract.
       url: https://github.com/amgskobo/zmk-feature-custom-settings
-      revision: c2f2dcd607bb29649d67d91625cec407cc184c51
+      revision: b91a8ceb0a57a0cf41b34270752d79463e2848fa
