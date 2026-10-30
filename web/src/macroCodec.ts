@@ -73,6 +73,9 @@ function readUvar(bytes: Uint8Array, offset: { value: number }): number {
 
   while (offset.value < bytes.length && shift <= 28) {
     const byte = bytes[offset.value++];
+    if (shift === 28 && (byte & 0xf0) !== 0) {
+      throw new Error("Invalid varuint in encoded macro");
+    }
     result |= (byte & 0x7f) << shift;
     if ((byte & 0x80) === 0) return result >>> 0;
     shift += 7;

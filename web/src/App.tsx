@@ -1,11 +1,8 @@
-import { useCallback, useContext, useEffect, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import "./App.css";
+import { useSessionRpc, isRetiredRequest } from "./useSessionRpc";
 import { connect as serialConnect } from "@zmkfirmware/zmk-studio-ts-client/transport/serial";
-import {
-  ZMKConnection,
-  ZMKCustomSubsystem,
-  ZMKAppContext,
-} from "@cormoran/zmk-studio-react-hook";
+import { ZMKConnection, ZMKAppContext } from "@cormoran/zmk-studio-react-hook";
 import {
   Request,
   Response,
@@ -33,6 +30,9 @@ type LoadedMacro = {
   name: string;
   steps: RuntimeMacroStep[];
 };
+
+const MAX_DELAY_MS = 60000;
+const MAX_TAP_MS = 10000;
 
 const DEFAULT_STEP: RuntimeMacroStep = {
   action: "tap",
@@ -120,7 +120,28 @@ function App() {
   );
 }
 
+const connectionIds = new WeakMap<object, number>();
+let nextConnectionId = 1;
+function sessionKey(
+  connection: object | null | undefined,
+  index: number | undefined,
+  catalog: string
+) {
+  let identity = 0;
+  if (connection) {
+    identity = connectionIds.get(connection) ?? nextConnectionId++;
+    connectionIds.set(connection, identity);
+  }
+  return `${identity}:${index ?? "missing"}:${catalog}`;
+}
 export function RuntimeMacroEditor() {
+  const app = useContext(ZMKAppContext);
+  const connection = app?.state.connection;
+  const index = app?.findSubsystem(SUBSYSTEM_IDENTIFIER)?.index;
+  const catalog = JSON.stringify(app?.state.customSubsystems?.subsystems ?? []);
+  return <RuntimeMacroSession key={sessionKey(connection, index, catalog)} />;
+}
+function RuntimeMacroSession() {
   const zmkApp = useContext(ZMKAppContext);
   const [macros, setMacros] = useState<MacroSummary[]>([]);
   const [selectedName, setSelectedName] = useState<string | null>(null);
@@ -144,33 +165,61 @@ export function RuntimeMacroEditor() {
   const subsystemIndex = subsystem?.index;
   const serviceReady = connection && subsystemIndex !== undefined;
 
+  const { call: callPayload, isCurrent } = useSessionRpc(
+    connection,
+    subsystemIndex
+  );
+  const selectedNameRef = useRef<string | null>(null);
+  const loadSequence = useRef(0);
+  const loadAbort = useRef<AbortController | null>(null);
+  const activities = useRef(new Set<symbol>());
+  const selectName = useCallback((name: string | null) => {
+    selectedNameRef.current = name;
+    setSelectedName(name);
+  }, []);
+  const beginActivity = useCallback(() => {
+    const token = Symbol();
+    activities.current.add(token);
+    if (isCurrent()) setIsLoading(true);
+    return () => {
+      activities.current.delete(token);
+      if (isCurrent()) setIsLoading(activities.current.size > 0);
+    };
+  }, [isCurrent]);
   const callRPC = useCallback(
-    async (request: Request) => {
-      if (!connection || subsystemIndex === undefined) {
-        throw new Error("Runtime macro subsystem is not connected");
-      }
-      const service = new ZMKCustomSubsystem(connection, subsystemIndex);
-      const payload = Request.encode(request).finish();
-      const responsePayload = await service.callRPC(payload);
-      if (!responsePayload) throw new Error("Empty RPC response");
-      const response = Response.decode(responsePayload);
+    async (request: Request, signal?: AbortSignal) => {
+      const payload = await callPayload(
+        Request.encode(request).finish(),
+        signal
+      );
+      const response = Response.decode(payload);
       if (response.error) throw new Error(response.error.message);
       return response;
     },
-    [connection, subsystemIndex]
+    [callPayload]
   );
 
   const loadMacro = useCallback(
     async (slot: number, keyPressId = keyPressBehaviorId) => {
-      setIsLoading(true);
+      const generation = ++loadSequence.current;
+      loadAbort.current?.abort();
+      const controller = new AbortController();
+      loadAbort.current = controller;
+      const target = macros.find((item) => item.slot === slot);
+      if (target) selectedNameRef.current = target.name;
+      const finishActivity = beginActivity();
       setMessage(null);
       try {
-        const response = await callRPC(Request.create({ getMacro: { slot } }));
+        const response = await callRPC(
+          Request.create({ getMacro: { slot } }),
+          controller.signal
+        );
+        if (generation !== loadSequence.current) return;
         const macro = response.getMacro?.macro;
         if (!macro) throw new Error("Macro was missing from RPC response");
 
         const steps = macro.steps.map(runtimeStepFromRpc);
-        setSelectedName(macro.name);
+        selectName(macro.name);
         setLoadedMacro({ slot: macro.slot, name: macro.name, steps });
         setRenameTo(macro.name);
         setJsonText(
@@ -181,18 +230,23 @@ export function RuntimeMacroEditor() {
           )
         );
       } catch (error) {
+        if (generation !== loadSequence.current || isRetiredRequest(error))
+          return;
         setMessage(
           error instanceof Error ? error.message : "Failed to load macro"
         );
       } finally {
-        setIsLoading(false);
+        finishActivity();
+        if (loadAbort.current === controller) loadAbort.current = null;
       }
     },
-    [callRPC, keyPressBehaviorId]
+    [callRPC, keyPressBehaviorId, macros, beginActivity, selectName]
   );
 
   const refreshList = useCallback(async () => {
-    setIsLoading(true);
+    const selectionAtStart = loadSequence.current;
+    const desiredName = selectedNameRef.current;
+    const finishActivity = beginActivity();
     setMessage(null);
     try {
       const response = await callRPC(Request.create({ listMacros: {} }));
@@ -216,24 +270,28 @@ export function RuntimeMacroEditor() {
       setKeyPressBehaviorId(nextKeyPressBehaviorId);
       setPoolBytesTotal(settings?.poolBytesTotal ?? 0);
       setPoolBytesUsed(settings?.poolBytesUsed ?? 0);
-      if (list.length > 0) {
-        const stillSelected = list.find((m) => m.name === selectedName);
-        await loadMacro(
-          (stillSelected ?? list[0]).slot,
-          nextKeyPressBehaviorId
-        );
-      } else {
-        setSelectedName(null);
-        setLoadedMacro(null);
+      if (loadSequence.current === selectionAtStart) {
+        if (list.length > 0) {
+          const stillSelected = list.find((m) => m.name === desiredName);
+          await loadMacro(
+            (stillSelected ?? list[0]).slot,
+            nextKeyPressBehaviorId
+          );
+        } else {
+          selectName(null);
+          setLoadedMacro(null);
+        }
       }
     } catch (error) {
+      if (loadSequence.current !== selectionAtStart || isRetiredRequest(error))
+        return;
       setMessage(
         error instanceof Error ? error.message : "Failed to list macros"
       );
     } finally {
-      setIsLoading(false);
+      finishActivity();
     }
-  }, [callRPC, loadMacro, selectedName]);
+  }, [callRPC, loadMacro, beginActivity, selectName]);
 
   useEffect(() => {
     if (!serviceReady) return;
@@ -269,13 +327,15 @@ export function RuntimeMacroEditor() {
     if (!loadedMacro) return;
     const steps = loadedMacro.steps.filter((_, index) => index !== stepIndex);
     setLoadedMacro({ ...loadedMacro, steps });
-    setJsonText(
-      JSON.stringify(
-        toKeyboardAbyssSteps(steps, { keyPressBehaviorId }),
-        null,
-        2
-      )
-    );
+    if (editorEncoding(steps, keyPressBehaviorId).error === null) {
+      setJsonText(
+        JSON.stringify(
+          toKeyboardAbyssSteps(steps, { keyPressBehaviorId }),
+          null,
+          2
+        )
+      );
+    }
   };
 
   const addStep = () => {
@@ -288,10 +348,11 @@ export function RuntimeMacroEditor() {
 
   const saveMacro = async (persist: boolean) => {
     if (!loadedMacro) return;
-    setIsLoading(true);
+    const finishActivity = beginActivity();
     setMessage(null);
 
     try {
+      validateEditorSteps(loadedMacro.steps);
       const codecOptions = { keyPressBehaviorId };
       const rpcSteps = compactKeyTapSteps(loadedMacro.steps, codecOptions);
       const encodedMacro = encodeRuntimeMacro(rpcSteps, codecOptions);
@@ -331,19 +392,25 @@ export function RuntimeMacroEditor() {
       );
       await refreshList();
     } catch (error) {
+      if (isRetiredRequest(error)) return;
       setMessage(
         error instanceof Error ? error.message : "Failed to save macro"
       );
     } finally {
-      setIsLoading(false);
+      finishActivity();
     }
   };
 
   const saveTapMs = async (persist: boolean) => {
-    setIsLoading(true);
+    const finishActivity = beginActivity();
     setMessage(null);
 
     try {
+      if (!Number.isInteger(tapMs) || tapMs < 0 || tapMs > MAX_TAP_MS) {
+        throw new Error(
+          `Tap ms must be an integer between 0 and ${MAX_TAP_MS}`
+        );
+      }
       await callRPC(
         Request.create({
           setTapMs: {
@@ -358,11 +425,12 @@ export function RuntimeMacroEditor() {
           : "Updated tap_ms in memory"
       );
     } catch (error) {
+      if (isRetiredRequest(error)) return;
       setMessage(
         error instanceof Error ? error.message : "Failed to save tap_ms"
       );
     } finally {
-      setIsLoading(false);
+      finishActivity();
     }
   };
 
@@ -373,43 +441,45 @@ export function RuntimeMacroEditor() {
     const name = newMacroName.trim();
     if (!name) return;
 
-    setIsLoading(true);
+    const finishActivity = beginActivity();
     setMessage(null);
     try {
       await callRPC(Request.create({ createMacro: { name, persist: false } }));
       setNewMacroName("");
       setMessage(`Created "${name}"`);
-      setSelectedName(name);
+      selectName(name);
       await refreshList();
     } catch (error) {
+      if (isRetiredRequest(error)) return;
       setMessage(
         error instanceof Error ? error.message : "Failed to create macro"
       );
     } finally {
-      setIsLoading(false);
+      finishActivity();
     }
   };
 
   const deleteMacro = async () => {
     if (!loadedMacro) return;
 
-    setIsLoading(true);
+    const finishActivity = beginActivity();
     setMessage(null);
     try {
       await callRPC(
         Request.create({ deleteMacro: { name: loadedMacro.name } })
       );
       setLoadedMacro(null);
-      setSelectedName(null);
+      selectName(null);
       setJsonText("[]");
       setMessage(`Deleted "${loadedMacro.name}"`);
       await refreshList();
     } catch (error) {
+      if (isRetiredRequest(error)) return;
       setMessage(
         error instanceof Error ? error.message : "Failed to delete macro"
       );
     } finally {
-      setIsLoading(false);
+      finishActivity();
     }
   };
 
@@ -418,7 +488,7 @@ export function RuntimeMacroEditor() {
     const newName = renameTo.trim();
     if (!newName || newName === loadedMacro.name) return;
 
-    setIsLoading(true);
+    const finishActivity = beginActivity();
     setMessage(null);
     try {
       // RenameMacro renames in place: the macro keeps its slot (and so its
@@ -433,14 +503,15 @@ export function RuntimeMacroEditor() {
         })
       );
       setMessage(`Renamed to "${newName}"`);
-      setSelectedName(newName);
+      selectName(newName);
       await refreshList();
     } catch (error) {
+      if (isRetiredRequest(error)) return;
       setMessage(
         error instanceof Error ? error.message : "Failed to rename macro"
       );
     } finally {
-      setIsLoading(false);
+      finishActivity();
     }
   };
 
@@ -459,7 +530,7 @@ export function RuntimeMacroEditor() {
       return;
     }
 
-    setIsLoading(true);
+    const finishActivity = beginActivity();
     setMessage(null);
     try {
       const response = await callRPC(
@@ -469,20 +540,21 @@ export function RuntimeMacroEditor() {
       );
       setMessage(response.status?.message ?? `Reset "${loadedMacro.name}"`);
       setLoadedMacro(null);
-      setSelectedName(null);
+      selectName(null);
       setJsonText("[]");
       await refreshList();
     } catch (error) {
+      if (isRetiredRequest(error)) return;
       setMessage(
         error instanceof Error ? error.message : "Failed to reset macro"
       );
     } finally {
-      setIsLoading(false);
+      finishActivity();
     }
   };
 
   const applyPendingMacros = async (action: "save" | "discard") => {
-    setIsLoading(true);
+    const finishActivity = beginActivity();
     setMessage(null);
 
     try {
@@ -499,13 +571,14 @@ export function RuntimeMacroEditor() {
             : "Discarded pending macro changes")
       );
     } catch (error) {
+      if (isRetiredRequest(error)) return;
       setMessage(
         error instanceof Error
           ? error.message
           : `Failed to ${action} pending macro changes`
       );
     } finally {
-      setIsLoading(false);
+      finishActivity();
     }
   };
 
@@ -517,6 +590,7 @@ export function RuntimeMacroEditor() {
         fromKeyboardAbyssSteps(JSON.parse(jsonText)),
         codecOptions
       );
+      validateEditorSteps(steps);
       const encoded = encodeRuntimeMacro(steps, codecOptions);
       if (encoded.length > maxMacroBytes) {
         throw new Error(
@@ -526,15 +600,17 @@ export function RuntimeMacroEditor() {
       setLoadedMacro({ ...loadedMacro, steps });
       setMessage("Imported Keyboard Abyss macro steps");
     } catch (error) {
+      if (isRetiredRequest(error)) return;
       setMessage(
         error instanceof Error ? error.message : "Failed to import JSON"
       );
     }
   };
 
-  const encodedSize = loadedMacro
-    ? encodeRuntimeMacro(loadedMacro.steps, { keyPressBehaviorId }).length
-    : 0;
+  const encoding = loadedMacro
+    ? editorEncoding(loadedMacro.steps, keyPressBehaviorId)
+    : { size: 0, error: null };
+  const encodedSize = encoding.size;
 
   return (
     <main className="workspace">
@@ -605,7 +681,7 @@ export function RuntimeMacroEditor() {
                 <input
                   type="number"
                   min={0}
-                  max={10000}
+                  max={MAX_TAP_MS}
                   value={tapMs}
                   onChange={(event) =>
                     setTapMs(numericValue(event.target.value))
@@ -655,6 +731,11 @@ export function RuntimeMacroEditor() {
               </div>
             </div>
 
+            {encoding.error && (
+              <p className="message error" role="alert">
+                {encoding.error}
+              </p>
+            )}
             <div className="steps">
               {loadedMacro.steps.map((step, index) => (
                 <StepEditor
@@ -673,14 +754,14 @@ export function RuntimeMacroEditor() {
               <button
                 className="btn"
                 onClick={() => saveMacro(false)}
-                disabled={isLoading}
+                disabled={isLoading || encoding.error !== null}
               >
                 Write Memory
               </button>
               <button
                 className="btn primary"
                 onClick={() => saveMacro(true)}
-                disabled={isLoading}
+                disabled={isLoading || encoding.error !== null}
               >
                 Save
               </button>
@@ -732,6 +813,38 @@ export function RuntimeMacroEditor() {
       </section>
     </main>
   );
+}
+
+function validateEditorSteps(steps: RuntimeMacroStep[]) {
+  for (const step of steps) {
+    if (
+      step.action === "delay" &&
+      (!Number.isInteger(step.delayMs) ||
+        step.delayMs < 0 ||
+        step.delayMs > MAX_DELAY_MS)
+    ) {
+      throw new Error(
+        `Delay ms must be an integer between 0 and ${MAX_DELAY_MS}`
+      );
+    }
+  }
+}
+function editorEncoding(
+  steps: RuntimeMacroStep[],
+  keyPressBehaviorId?: number
+): { size: number; error: string | null } {
+  try {
+    validateEditorSteps(steps);
+    return {
+      size: encodeRuntimeMacro(steps, { keyPressBehaviorId }).length,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      size: 0,
+      error: error instanceof Error ? error.message : "Invalid macro step",
+    };
+  }
 }
 
 function numericValue(value: string) {
@@ -800,6 +913,7 @@ function StepEditor({
           <input
             type="number"
             min={0}
+            max={MAX_DELAY_MS}
             value={step.delayMs}
             onChange={(event) =>
               onChange({
