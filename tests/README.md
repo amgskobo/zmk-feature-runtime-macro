@@ -40,6 +40,12 @@ owner matrix. No network updates are implicit in the owner test command.
 
 `tests/rpc-handler/run.py` compiles the real Studio RPC handler with the real
 nanopb codec, optimized and with ASan/UBSan, against a controlled macro store.
+It also checks that memory-only reset without a devicetree default preserves the
+macro, that memory reset with a default remains supported, and that explicit
+persistent reset can delete. A 2048-byte capacity variant rejects stack frames
+larger than 2048 bytes and runs the same handler scenarios. Dependency paths for
+the review fixtures are resolved from the selected west workspace by the owner
+entry; callers need not provide `ZMK_ROOT` or `NANOPB_ROOT` for that entry.
 While Studio is locked every request that reads macro steps or changes
 anything is refused before it reaches the store, and ListMacros and
 GetMacroGlobalSettings still answer. Unlocked, lifecycle errors map to their
@@ -162,3 +168,12 @@ establish physical serial delivery or rollback of already-dispatched requests.
 Retirement stops subsequent requests; resize/step writes remain non-atomic.
 Run build and lint separately with `npm --prefix web run build` and
 `npm --prefix web run lint` in the prepared container.
+
+## Additional playback completion controls
+
+`tests/playback` retains 33-tap press/release recovery under queue pressure and
+checks busy-state retention behind an unrelated 500 ms queued wait. It links the
+actual DYA behavior queue, emits a required completion marker and is repeated
+three times by the native verifier. `tests/review` retains 32/33/64-tap producer
+controls, packed/nonpacked default waits and 31/32/33-byte real nanopb name bounds.
+The canonical owner entry dispatches these alongside all existing assertions.

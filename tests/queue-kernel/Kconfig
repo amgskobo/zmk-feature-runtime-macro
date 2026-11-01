@@ -1,0 +1,8 @@
+mainmenu "Runtime macro real-kernel queue boundary"
+source "Kconfig.zephyr"
+config ZMK_LOG_LEVEL
+    int
+    default 0
+config ZMK_BEHAVIORS_QUEUE_SIZE
+    int
+    default 64

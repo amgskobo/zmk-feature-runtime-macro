@@ -69,6 +69,7 @@ class WestCommandsTests(unittest.TestCase):
         verify_native(test_build_dir, THIS_DIR / "tests")
         self.assertIn("PASS: test", result.stdout, result.stdout + result.stderr)
         self.assertIn("PASS: studio", result.stdout, result.stdout + result.stderr)
+        self.assertIn("PASS: playback", result.stdout, result.stdout + result.stderr)
         self.assertNotIn("FAILED: ", result.stdout, result.stdout + result.stderr)
 
     @unittest.skipUnless(platform.system() == "Linux", "queue boundaries require Linux")
@@ -108,6 +109,27 @@ class WestCommandsTests(unittest.TestCase):
         )
         (self.BUILD_DIR / "test_rpc_handler.log").write_text(
             result.stdout + result.stderr, encoding="utf-8"
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_review_regressions(self):
+        # Resolve the selected workspace instead of requiring shell-only paths.
+        env = {**os.environ}
+        for variable, project in (("ZMK_ROOT", "zmk"), ("NANOPB_ROOT", "nanopb")):
+            selected = run_west(["list", project, "-f", "{abspath}"])
+            self.assertEqual(selected.returncode, 0, selected.stdout + selected.stderr)
+            path = Path(selected.stdout.strip())
+            self.assertTrue(path.is_absolute() and path.is_dir(), selected.stdout)
+            env[variable] = str(path.resolve())
+        result = subprocess.run(
+            ["python3", "-m", "unittest", "discover", "-s", "tests/review", "-v"],
+            capture_output=True,
+            text=True,
+            cwd=THIS_DIR,
+            env=env,
+        )
+        (self.BUILD_DIR / "test_review_regressions.log").write_text(
+            result.stdout + result.stderr
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

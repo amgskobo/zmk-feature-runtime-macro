@@ -24,13 +24,13 @@ config ZMK_RUNTIME_MACRO_COUNT
 config ZMK_RUNTIME_MACRO_NAME_MAX_LEN
     int "Maximum runtime macro name length (bytes, excluding NUL)"
     default 24
-    range 1 31
+    range 1 32
     help
       A macro's name is its keyspace entry key (stored as "macro/<name>").
       This bounds the name portion only; the "macro/" prefix and NUL
       terminator are accounted for separately and must still fit within
-      ZMK_CUSTOM_SETTINGS_KEY_MAX_LEN. Studio messages carry at most 31
-      bytes of a name.
+      ZMK_CUSTOM_SETTINGS_KEY_MAX_LEN. Studio messages carry at most 32
+      bytes of a name, excluding the NUL terminator.
 
 config ZMK_RUNTIME_MACRO_POOL_BYTES
     int "Shared runtime macro name+body pool size (bytes)"
@@ -76,6 +76,9 @@ config ZMK_RUNTIME_MACRO_DT_DEFAULTS_TEST
     bool "Enable devicetree default macro test setup"
     help
       Owner zmk-test fixtures only; never enable it in a keyboard build.
+
+config ZMK_RUNTIME_MACRO_PLAYBACK_TEST
+    bool "Enable runtime macro playback queue regression"
 
 endif
 

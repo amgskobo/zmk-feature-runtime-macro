@@ -14,6 +14,11 @@ if(CONFIG_ZMK_RUNTIME_MACRO)
         target_sources(app PRIVATE tests/ztest/runtime_macro_dt_defaults_test.c)
     endif()
 
+    if(CONFIG_ZMK_RUNTIME_MACRO_PLAYBACK_TEST)
+        target_sources(app PRIVATE tests/ztest/runtime_macro_playback_test.c)
+        zephyr_link_libraries(-Wl,--wrap=zmk_behavior_invoke_binding)
+    endif()
+
     if(CONFIG_ZMK_RUNTIME_MACRO_STUDIO_RPC)
         target_sources(app PRIVATE src/studio/runtime_macro_handler.c)
 

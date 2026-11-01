@@ -51,7 +51,7 @@ manifest:
   projects:
     - name: zmk-feature-runtime-macro
       remote: amgskobo
-      revision: fix/review-hardening
+      revision: codex/runtime-macro-review
       import: true
     - name: zmk
       remote: cormoran
@@ -132,7 +132,7 @@ Memory updates become pending custom setting changes; use **Save Pending** to pe
 
 Create/Delete/Rename are macro-domain RPCs on this module's own subsystem (`CreateMacro`/`DeleteMacro`/`RenameMacro`), addressing a macro by its **name**. A client never needs to know that macros are stored as zmk-feature-custom-settings keyspace entries under the `macro/` prefix - the storage is an implementation detail, and no separate custom-settings RPC call is required. `RenameMacro` renames the entry in place in one write: the macro keeps its slot (so `&rmacro N` bindings keep working) and its body. Validation or allocation refusal leaves it unchanged. With `persist: true`, a storage error retains the new name in RAM as an unsaved change. A backend refusal before writing keeps the previous durable name, as the owner's controlled backend verifies; arbitrary physical storage errors provide no atomic durability guarantee. Save retries the rename and discard reloads the persisted name. No change event is raised for that failed write, so API clients must reread after a persistence error. The current Web editor renames in memory (`persist: false`) and then uses Save Pending for persistence. This uses `zmk_custom_setting_keyspace_rename()` from the custom settings fork.
 
-`ResetMacro` restores a macro to its compile-time state, addressing it by **slot number**: if a [devicetree default](#devicetree-default-macros) declares a macro of the same name, its body is overwritten with that default; otherwise the macro is deleted (a macro that only ever existed at runtime "resets" to not existing). Like the other body-editing RPCs it takes a `persist` flag - leave it off for a session-only reset (a persisted devicetree default is re-seeded next boot anyway), or set it to write the reset straight to flash.
+`ResetMacro` restores a macro to its compile-time state, addressing it by **slot number**. If a [devicetree default](#devicetree-default-macros) declares a macro of the same name, its body is overwritten with that default; `persist: false` keeps that body in memory and `persist: true` saves it. Without a matching default, a memory-only reset is refused without changing the macro. Set `persist: true` to delete it durably, or use the explicit Delete action. The Web editor uses memory-only Reset to Default and keeps a macro without a default unchanged.
 
 This module's own operational RPCs - `GetMacro`, `SetMacroStepCount`, `SetMacroStep`, and `AppendMacroStep` - address the macro to read or edit by its **slot number**, the same numeric value used for the keymap binding, not by name. Discover a macro's slot from the `ListMacros` response (the `CreateMacro` status message also names the slot it just assigned); an unbound or out-of-range slot is rejected with a clear error rather than silently doing nothing.
 
@@ -219,7 +219,7 @@ Every macro's name + body together draw from **one shared RAM pool** sized by `C
 | Kconfig                                                                              | Meaning                                                                                                                                                | Default |
 | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
 | `CONFIG_ZMK_RUNTIME_MACRO_COUNT`                                                     | How many macros can exist at once (bounds the fixed slot-descriptor array, independent of the byte pool below).                                        | 8       |
-| `CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN`                                              | Longest a macro's name may be, in bytes (at most 31, what Studio messages carry).                                                                        | 24      |
+| `CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN`                                              | Longest a macro's name may be, in bytes (at most 32, what Studio messages carry).                                                                        | 24      |
 | `CONFIG_ZMK_RUNTIME_MACRO_POOL_BYTES`                                                | Total bytes shared by every macro's name + body combined.                                                                                               | 1024    |
 | `CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES`                                                 | Largest a single macro's encoded body may be. Also sizes playback/RPC staging buffers.                                                                  | 256     |
 | `CONFIG_ZMK_CUSTOM_SETTINGS_LARGE_VALUE_MAX_SIZE` (from zmk-feature-custom-settings) | Must be raised to at least `MAX_BYTES` (see the `.conf` snippet above) - it caps every large/pooled setting in the firmware, not just this module's.    | 64      |
@@ -256,3 +256,7 @@ cd web && npm test
 ```
 
 The Web UI can import and export the macro step subset from the Keyboard Abyss keybindings schema. Runtime behavior bindings are represented as valid `raw` bindings using `local-id:<behavior_id> <param1> <param2>`.
+
+Playback remains busy until a completion marker reaches the end of the shared
+behavior queue, including pre-existing queued work. Temporary queue saturation
+yields and resumes at the first unqueued action without losing a tap release.

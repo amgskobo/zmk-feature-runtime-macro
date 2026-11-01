@@ -33,6 +33,7 @@
 LOG_MODULE_REGISTER(zmk_runtime_macro_fork_runtime_macro, CONFIG_ZMK_RUNTIME_MACRO_FORK_LOG_LEVEL);
 
 #define RUNTIME_MACRO_WAIT_BEHAVIOR_NAME "runtime_macro_wait"
+#define RUNTIME_MACRO_COMPLETE_PARAM 1U
 
 struct runtime_macro_queue_item {
     bool is_delay;
@@ -40,6 +41,15 @@ struct runtime_macro_queue_item {
     bool pressed;
     uint32_t delay_ms;
     struct zmk_behavior_binding binding;
+};
+
+struct runtime_macro_queue_state {
+    size_t index;
+    bool tap_pressed;
+    bool initialized;
+    bool complete;
+    uint32_t pending_delay_ms;
+    uint32_t tap_ms;
 };
 
 struct runtime_macro_player {
@@ -51,19 +61,18 @@ struct runtime_macro_player {
     struct zmk_behavior_binding_event event;
     uint8_t encoded[CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES];
     struct runtime_macro_queue_item items[CONFIG_ZMK_RUNTIME_MACRO_QUEUE_SIZE];
-    /* Accepted queue entries cannot be rolled back. Keep the next edge until
-     * the shared queue admits it, including a tap's outstanding release. */
-    size_t count;
-    size_t next;
-    uint32_t pending_delay_ms;
+    size_t item_count;
+    bool queue_ready;
+    struct runtime_macro_queue_state queue_state;
     uint32_t queued_duration_ms;
-    bool prepared;
-    bool tap_release_pending;
 };
 
 static void runtime_macro_play_work_handler(struct k_work *work);
 static void runtime_macro_clear_active_work_handler(struct k_work *work);
-static int queue_runtime_macro(const struct zmk_behavior_binding_event *event);
+static int queue_runtime_macro(const struct runtime_macro_queue_item *items, size_t count,
+                               const struct zmk_behavior_binding_event *event,
+                               struct runtime_macro_queue_state *state,
+                               uint32_t *queued_duration_ms);
 
 static struct runtime_macro_player player = {
     .lock = Z_MUTEX_INITIALIZER(player.lock),
@@ -73,8 +82,13 @@ static struct runtime_macro_player player = {
 
 static int on_runtime_macro_wait_pressed(struct zmk_behavior_binding *binding,
                                          struct zmk_behavior_binding_event event) {
-    ARG_UNUSED(binding);
     ARG_UNUSED(event);
+
+    if (binding->param1 == RUNTIME_MACRO_COMPLETE_PARAM) {
+        // Clear active only after the global queue has executed the final
+        // action and its wait, and after the producer work has returned.
+        k_work_reschedule(&player.clear_active_work, K_NO_WAIT);
+    }
 
     return ZMK_BEHAVIOR_OPAQUE;
 }
@@ -155,7 +169,8 @@ int zmk_runtime_macro_pack_key_tap(uint32_t keycode, uint8_t *packed_key) {
         return -EINVAL;
     }
 
-    uint32_t usage_keycode = STRIP_MODS(keycode);
+    /* Some supported STRIP_MODS definitions shift a signed 0xff by 24. */
+    uint32_t usage_keycode = keycode & UINT32_C(0x00ffffff);
     if (ZMK_HID_USAGE_PAGE(usage_keycode) != HID_USAGE_KEY) {
         return -EINVAL;
     }
@@ -427,12 +442,10 @@ static int runtime_macro_start_playback(uint32_t slot,
     k_work_cancel_delayable(&player.clear_active_work);
     player.slot = slot;
     player.event = *event;
-    player.count = 0;
-    player.next = 0;
-    player.pending_delay_ms = 0;
+    player.item_count = 0;
+    player.queue_ready = false;
+    player.queue_state = (struct runtime_macro_queue_state){0};
     player.queued_duration_ms = 0;
-    player.prepared = false;
-    player.tap_release_pending = false;
     player.active = true;
     k_mutex_unlock(&player.lock);
 
@@ -445,15 +458,8 @@ static int runtime_macro_start_playback(uint32_t slot,
     return 0;
 }
 
-static void runtime_macro_finish_playback(uint32_t active_ms) {
-    if (active_ms == 0) {
-        runtime_macro_clear_active_work_handler(&player.clear_active_work.work);
-        return;
-    }
-
-    k_work_schedule(
-        &player.clear_active_work,
-        K_TICKS(runtime_macro_timeout_ticks(active_ms + 1U, CONFIG_SYS_CLOCK_TICKS_PER_SEC)));
+static void runtime_macro_finish_playback(void) {
+    runtime_macro_clear_active_work_handler(&player.clear_active_work.work);
 }
 
 static void runtime_macro_play_work_handler(struct k_work *work) {
@@ -464,45 +470,45 @@ static void runtime_macro_play_work_handler(struct k_work *work) {
     struct zmk_behavior_binding_event event = player.event;
     k_mutex_unlock(&player.lock);
 
-    if (!player.prepared && !runtime_macros.slots[slot].in_use) {
+    if (!player.queue_ready && !runtime_macros.slots[slot].in_use) {
         /* The slot was deleted between the keypress and this deferred work
          * running - nothing to play. */
         LOG_DBG("Runtime macro slot %u is empty at playback time", slot);
-        runtime_macro_finish_playback(0);
+        runtime_macro_finish_playback();
         return;
     }
 
-    int ret;
-    if (!player.prepared) {
+    if (!player.queue_ready) {
         size_t body_size = 0;
-        ret = zmk_custom_setting_read_into(&runtime_macros.slots[slot].setting, player.encoded,
-                                           sizeof(player.encoded), &body_size, NULL);
+        int ret = zmk_custom_setting_read_into(&runtime_macros.slots[slot].setting, player.encoded,
+                                               sizeof(player.encoded), &body_size, NULL);
         if (ret < 0) {
             LOG_WRN("Runtime macro slot %u body read failed: %d", slot, ret);
-            runtime_macro_finish_playback(0);
+            runtime_macro_finish_playback();
             return;
         }
-
-        ret = decode_macro(player.encoded, body_size, player.items, &player.count);
+        ret = decode_macro(player.encoded, body_size, player.items, &player.item_count);
         if (ret < 0) {
             LOG_WRN("Runtime macro slot %u decode failed: %d", slot, ret);
-            runtime_macro_finish_playback(0);
+            runtime_macro_finish_playback();
             return;
         }
-
-        player.prepared = true;
+        player.queue_ready = true;
     }
 
-    ret = queue_runtime_macro(&event);
-    if (ret < 0) {
-        /* The public queue uses K_NO_WAIT: yielding lets its delayed consumer
-         * drain. Reloading the body or clearing active here would lose an
-         * already-accepted press's release or replay earlier presses. */
+    int ret = queue_runtime_macro(player.items, player.item_count, &event, &player.queue_state,
+                                  &player.queued_duration_ms);
+    if (ret == -ENOMSG || ret == -EAGAIN) {
+        // The behavior queue drains on this same system work queue. Yield
+        // rather than blocking it, then resume at the first unqueued action.
         k_work_reschedule(&player.play_work, K_MSEC(10));
         return;
     }
-
-    runtime_macro_finish_playback(player.queued_duration_ms);
+    if (ret < 0) {
+        LOG_WRN("Runtime macro slot %u queue failed: %d", slot, ret);
+        runtime_macro_finish_playback();
+    }
+    // A completion marker in the behavior queue releases player.active.
 }
 
 static int queue_behavior(const struct zmk_behavior_binding_event *event,
@@ -516,81 +522,90 @@ static int queue_behavior(const struct zmk_behavior_binding_event *event,
     return ret;
 }
 
-/* A delay right after item `*i` becomes the wait after its edge; `*i` then
- * names that delay item, so it is consumed with the edge. */
-static uint32_t take_following_delay(size_t *i) {
-    if (*i + 1 < player.count && player.items[*i + 1].is_delay) {
-        (*i)++;
-        return player.items[*i].delay_ms;
+static void add_saturating_delay(uint32_t *total_ms, uint32_t delay_ms) {
+    if (UINT32_MAX - *total_ms < delay_ms) {
+        *total_ms = UINT32_MAX;
+    } else {
+        *total_ms += delay_ms;
     }
-    return 0;
 }
 
-static int queue_runtime_macro(const struct zmk_behavior_binding_event *event) {
+static int queue_runtime_macro(const struct runtime_macro_queue_item *items, size_t count,
+                               const struct zmk_behavior_binding_event *event,
+                               struct runtime_macro_queue_state *state,
+                               uint32_t *queued_duration_ms) {
+    if (state->complete) {
+        return 0;
+    }
+    if (!state->initialized) {
+        state->tap_ms = zmk_runtime_macro_tap_ms();
+        state->initialized = true;
+    }
+
     struct zmk_behavior_binding none_binding = {
         .behavior_dev = RUNTIME_MACRO_WAIT_BEHAVIOR_NAME,
     };
 
-    while (player.next < player.count) {
-        size_t i = player.next;
-        const struct runtime_macro_queue_item *item = &player.items[i];
+    while (state->index < count) {
+        size_t i = state->index;
+        const struct runtime_macro_queue_item *item = &items[i];
 
         if (item->is_delay) {
-            player.pending_delay_ms += item->delay_ms;
-            player.next++;
+            uint32_t delay_ms = item->delay_ms;
+            add_saturating_delay(&state->pending_delay_ms, delay_ms);
+            state->index++;
             continue;
         }
 
-        if (player.pending_delay_ms > 0) {
-            int ret = queue_behavior(event, &none_binding, true, player.pending_delay_ms);
+        if (state->pending_delay_ms > 0) {
+            int ret = queue_behavior(event, &none_binding, true, state->pending_delay_ms);
             if (ret < 0) {
                 return ret;
             }
-            player.queued_duration_ms += player.pending_delay_ms;
-            player.pending_delay_ms = 0;
+            add_saturating_delay(queued_duration_ms, state->pending_delay_ms);
+            state->pending_delay_ms = 0;
         }
 
-        if (item->is_tap) {
-            int ret;
-            if (!player.tap_release_pending) {
-                uint32_t tap_ms = zmk_runtime_macro_tap_ms();
-                ret = queue_behavior(event, &item->binding, true, tap_ms);
-                if (ret < 0) {
-                    return ret;
-                }
-                player.queued_duration_ms += tap_ms;
-                player.tap_release_pending = true;
-            }
-
-            uint32_t wait_ms = take_following_delay(&i);
-            ret = queue_behavior(event, &item->binding, false, wait_ms);
+        if (item->is_tap && !state->tap_pressed) {
+            int ret = queue_behavior(event, &item->binding, true, state->tap_ms);
             if (ret < 0) {
                 return ret;
             }
-            player.queued_duration_ms += wait_ms;
-            player.tap_release_pending = false;
-            player.next = i + 1;
-            continue;
+            add_saturating_delay(queued_duration_ms, state->tap_ms);
+            state->tap_pressed = true;
         }
 
-        uint32_t wait_ms = take_following_delay(&i);
-        int ret = queue_behavior(event, &item->binding, item->pressed, wait_ms);
+        uint32_t wait_ms = 0;
+        bool following_delay = i + 1 < count && items[i + 1].is_delay;
+        if (following_delay) {
+            wait_ms = items[i + 1].delay_ms;
+        }
+
+        int ret =
+            queue_behavior(event, &item->binding, item->is_tap ? false : item->pressed, wait_ms);
         if (ret < 0) {
             return ret;
         }
-        player.queued_duration_ms += wait_ms;
-        player.next = i + 1;
+        add_saturating_delay(queued_duration_ms, wait_ms);
+        state->tap_pressed = false;
+        state->index += following_delay ? 2 : 1;
     }
 
-    if (player.pending_delay_ms > 0) {
-        int ret = queue_behavior(event, &none_binding, true, player.pending_delay_ms);
+    if (state->pending_delay_ms > 0) {
+        int ret = queue_behavior(event, &none_binding, true, state->pending_delay_ms);
         if (ret < 0) {
             return ret;
         }
-        player.queued_duration_ms += player.pending_delay_ms;
-        player.pending_delay_ms = 0;
+        add_saturating_delay(queued_duration_ms, state->pending_delay_ms);
+        state->pending_delay_ms = 0;
     }
 
+    none_binding.param1 = RUNTIME_MACRO_COMPLETE_PARAM;
+    int ret = queue_behavior(event, &none_binding, true, 0);
+    if (ret < 0) {
+        return ret;
+    }
+    state->complete = true;
     return 0;
 }
 

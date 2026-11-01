@@ -105,10 +105,10 @@ message RenameMacroRequest {
 // Reset the macro at `slot` to its compile-time (devicetree) state: if a
 // `cormoran,runtime-macro-default` node declares a macro whose name matches
 // this macro's, overwrite the body with that default; otherwise (no such
-// compile-time default) delete the macro entirely - "reset" of a macro that
-// only ever existed at runtime means removing it. `persist` writes the reset
-// result straight to flash (otherwise it lives in memory until SaveMacros /
-// is re-seeded from the devicetree next boot).
+// compile-time default) delete the macro entirely only when persist is true.
+// A non-persistent reset without a default is refused without changing state;
+// use DeleteMacro for explicit durable deletion. With a default, persist=false
+// keeps the reset body in memory until SaveMacros or discard/reboot.
 message ResetMacroRequest {
     uint32 slot = 1;
     bool persist = 2;

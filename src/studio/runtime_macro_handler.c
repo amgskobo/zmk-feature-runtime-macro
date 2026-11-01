@@ -380,6 +380,11 @@ static struct {
     size_t size;
 } get_macro_stream;
 
+/* Studio finishes encoding a reply before dispatching another request. Reuse
+ * its input buffer for edits, with one shared output buffer, so increasing
+ * MAX_BYTES never increases the RPC thread's stack frame. */
+static uint8_t macro_edit_output[CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES];
+
 static bool encode_macro_steps_cb(pb_ostream_t *stream, const pb_field_t *field, void *const *arg) {
     ARG_UNUSED(arg);
 
@@ -440,7 +445,7 @@ static int handle_get_macro(const cormoran_runtime_macro_GetMacroRequest *req,
 
 /* Read a macro's stored byte blob and validate its header. Returns the size via
  * *size; -EINVAL if a non-empty blob has the wrong format version. These edit
- * handlers rewrite the compact byte stream in place (two 256 B stack buffers),
+ * handlers rewrite the compact byte stream using shared staging buffers,
  * never decoding into a MacroStep steps[64] (~4.6 KB) array. */
 static int read_macro_blob(const char *name, uint8_t *encoded, size_t capacity, size_t *size) {
     int ret = zmk_runtime_macro_read(name, encoded, capacity, size);
@@ -465,14 +470,14 @@ static int handle_set_macro_step_count(const cormoran_runtime_macro_SetMacroStep
         return ret;
     }
 
-    uint8_t in[CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES];
+    uint8_t *const in = get_macro_stream.encoded;
     size_t in_size = 0;
-    ret = read_macro_blob(name, in, sizeof(in), &in_size);
+    ret = read_macro_blob(name, in, sizeof(get_macro_stream.encoded), &in_size);
     if (ret < 0) {
         return ret;
     }
 
-    uint8_t out[CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES];
+    uint8_t *const out = macro_edit_output;
     out[0] = ZMK_RUNTIME_MACRO_FORMAT_VERSION;
     size_t out_off = 1;
     size_t in_off = (in_size > 0) ? 1 : 0;
@@ -488,7 +493,7 @@ static int handle_set_macro_step_count(const cormoran_runtime_macro_SetMacroStep
             return ret;
         }
         size_t step_len = in_off - step_start;
-        if (out_off + step_len > sizeof(out)) {
+        if (out_off + step_len > sizeof(macro_edit_output)) {
             return -ENOSPC;
         }
         memcpy(&out[out_off], &in[step_start], step_len);
@@ -500,7 +505,7 @@ static int handle_set_macro_step_count(const cormoran_runtime_macro_SetMacroStep
             (cormoran_runtime_macro_MacroStep)cormoran_runtime_macro_MacroStep_init_zero;
         step.which_step = cormoran_runtime_macro_MacroStep_delay_tag;
         step.step.delay.delay_ms = 0;
-        ret = encode_one_step(&step, out, sizeof(out), &out_off);
+        ret = encode_one_step(&step, out, sizeof(macro_edit_output), &out_off);
         if (ret < 0) {
             return ret;
         }
@@ -535,14 +540,14 @@ static int handle_set_macro_step(const cormoran_runtime_macro_SetMacroStepReques
         return ret;
     }
 
-    uint8_t in[CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES];
+    uint8_t *const in = get_macro_stream.encoded;
     size_t in_size = 0;
-    ret = read_macro_blob(name, in, sizeof(in), &in_size);
+    ret = read_macro_blob(name, in, sizeof(get_macro_stream.encoded), &in_size);
     if (ret < 0) {
         return ret;
     }
 
-    uint8_t out[CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES];
+    uint8_t *const out = macro_edit_output;
     out[0] = ZMK_RUNTIME_MACRO_FORMAT_VERSION;
     size_t out_off = 1;
     size_t in_off = (in_size > 0) ? 1 : 0;
@@ -559,14 +564,14 @@ static int handle_set_macro_step(const cormoran_runtime_macro_SetMacroStepReques
             return ret;
         }
         if (index == req->step_index) {
-            ret = encode_one_step(&req->step, out, sizeof(out), &out_off);
+            ret = encode_one_step(&req->step, out, sizeof(macro_edit_output), &out_off);
             if (ret < 0) {
                 return ret;
             }
             replaced = true;
         } else {
             size_t step_len = in_off - step_start;
-            if (out_off + step_len > sizeof(out)) {
+            if (out_off + step_len > sizeof(macro_edit_output)) {
                 return -ENOSPC;
             }
             memcpy(&out[out_off], &in[step_start], step_len);
@@ -606,9 +611,9 @@ static int handle_append_macro_step(const cormoran_runtime_macro_AppendMacroStep
         return ret;
     }
 
-    uint8_t encoded[CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES];
+    uint8_t *const encoded = get_macro_stream.encoded;
     size_t size = 0;
-    ret = read_macro_blob(name, encoded, sizeof(encoded), &size);
+    ret = read_macro_blob(name, encoded, sizeof(get_macro_stream.encoded), &size);
     if (ret < 0) {
         return ret;
     }
@@ -620,7 +625,7 @@ static int handle_append_macro_step(const cormoran_runtime_macro_AppendMacroStep
         encoded[0] = ZMK_RUNTIME_MACRO_FORMAT_VERSION;
         offset = 1;
     }
-    ret = encode_one_step(&req->step, encoded, sizeof(encoded), &offset);
+    ret = encode_one_step(&req->step, encoded, sizeof(get_macro_stream.encoded), &offset);
     if (ret < 0) {
         return ret;
     }
@@ -761,13 +766,18 @@ static int handle_reset_macro(const cormoran_runtime_macro_ResetMacroRequest *re
         return ret;
     }
 
-    uint8_t encoded[CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES];
+    uint8_t *const encoded = get_macro_stream.encoded;
     size_t size = 0;
-    ret = zmk_runtime_macro_default_encode(name, encoded, sizeof(encoded), &size);
+    ret = zmk_runtime_macro_default_encode(name, encoded, sizeof(get_macro_stream.encoded), &size);
 
     char message[96];
     if (ret == -ENOENT) {
-        /* No compile-time default for this name: resetting means deleting it. */
+        /* Keyspace deletion is durable. Never turn a memory-only reset into
+         * an irreversible delete; callers can request deletion explicitly. */
+        if (!req->persist) {
+            set_error(resp, "No devicetree default: use Delete to remove this macro");
+            return 0;
+        }
         ret = zmk_runtime_macro_delete(name);
         if (ret < 0) {
             return ret;

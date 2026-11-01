@@ -517,14 +517,14 @@ function RuntimeMacroSession() {
 
   // Reset restores a macro to its compile-time (devicetree) default: the
   // firmware overwrites it with that default body if one exists for its name,
-  // or deletes the macro if it has no compile-time default. Addressed by slot,
-  // like the other body-editing RPCs.
+  // A memory-only reset without a default is refused. The separate Delete
+  // action explicitly requests durable deletion.
   const resetMacro = async () => {
     if (!loadedMacro) return;
     if (
       !window.confirm(
         `Reset "${loadedMacro.name}" to its compile-time default? ` +
-          `If it has no devicetree default it will be deleted.`
+          `Without a devicetree default it will remain unchanged; use Delete to remove it.`
       )
     ) {
       return;

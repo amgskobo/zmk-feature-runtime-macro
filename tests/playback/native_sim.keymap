@@ -1,0 +1,13 @@
+#include <dt-bindings/zmk/keys.h>
+#include <behaviors.dtsi>
+#include <behaviors/runtime_macro.dtsi>
+#include <dt-bindings/zmk/kscan_mock.h>
+/ {
+    keymap {
+        compatible = "zmk,keymap";
+        base { bindings = <&kp C &rmacro 0 &kp E &kp F>; };
+    };
+};
+&kscan {
+    events = <ZMK_MOCK_PRESS(0,0,5000)>;
+};

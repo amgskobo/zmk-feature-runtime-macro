@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.20.0)
+find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+project(runtime_macro_queue_boundary)
+target_include_directories(app BEFORE PRIVATE include ${ZMK_ROOT}/app/include)
+target_sources(app PRIVATE main.c ${QUEUE_GENERATED} ${ZMK_ROOT}/app/src/behavior_queue.c)

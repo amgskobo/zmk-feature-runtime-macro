@@ -59,6 +59,8 @@ struct zmk_custom_setting_value {
 #define ZMK_CUSTOM_SETTING_VALUE_INT32(v) ((struct zmk_custom_setting_value){.int32_value = (v)})
 
 static unsigned mutations;
+static bool have_default;
+static enum zmk_custom_setting_write_mode last_body_write_mode;
 static int suppress_depth;
 static uint32_t tap_ms = 30;
 static void zmk_custom_settings_notify_suppress_begin(void) { suppress_depth++; }
@@ -160,7 +162,7 @@ int zmk_runtime_macro_delete(const char *name) {
 }
 int zmk_runtime_macro_write(const char *name, const uint8_t *encoded, size_t size,
                             enum zmk_custom_setting_write_mode mode) {
-    (void)mode;
+    last_body_write_mode = mode;
     int slot = find(name);
     if (slot < 0) {
         return slot;
@@ -196,7 +198,14 @@ int zmk_runtime_macro_rename(const char *old_name, const char *new_name,
 }
 int zmk_runtime_macro_default_encode(const char *name, uint8_t *encoded, size_t capacity,
                                      size_t *size) {
-    (void)name, (void)encoded, (void)capacity, (void)size;
+    (void)name;
+    if (have_default) {
+        const uint8_t body[] = {1, ZMK_RUNTIME_MACRO_OP_DELAY, 9};
+        assert(capacity >= sizeof(body));
+        memcpy(encoded, body, sizeof(body));
+        *size = sizeof(body);
+        return 0;
+    }
     return -ENOENT;
 }
 int zmk_runtime_macro_name_for_slot(uint32_t slot, char *name, size_t capacity) {
@@ -467,6 +476,32 @@ int main(void) {
     call(&req);
     expect_status();
     assert(tap_ms == 50);
+
+    /* A nonpersistent reset cannot reach the durable-delete API. A default
+     * still resets in memory, and explicit persistent reset may delete. */
+    const uint8_t reset_body[] = {1, ZMK_RUNTIME_MACRO_OP_DELAY, 7};
+    memcpy(store[0].body, reset_body, sizeof(reset_body));
+    store[0].size = sizeof(reset_body);
+    before = mutations;
+    req = request(cormoran_runtime_macro_Request_reset_macro_tag);
+    req.request_type.reset_macro.persist = false;
+    call(&req);
+    expect_error("No devicetree default: use Delete to remove this macro");
+    assert(mutations == before && store[0].in_use);
+    expect_body(reset_body, sizeof(reset_body));
+    have_default = true;
+    call(&req);
+    expect_status();
+    const uint8_t default_body[] = {1, ZMK_RUNTIME_MACRO_OP_DELAY, 9};
+    expect_body(default_body, sizeof(default_body));
+    assert(last_body_write_mode == ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY);
+    have_default = false;
+    req.request_type.reset_macro.persist = true;
+    call(&req);
+    expect_status();
+    assert(!store[0].in_use);
+    printf("runtime macro rpc reset: PASS memory refusal, default and explicit deletion\n");
+    store[0].in_use = true;
 
     req = request(cormoran_runtime_macro_Request_delete_macro_tag);
     snprintf(req.request_type.delete_macro.name, sizeof(req.request_type.delete_macro.name),

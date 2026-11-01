@@ -57,7 +57,7 @@ with tempfile.TemporaryDirectory(prefix="runtime-macro-rpc-handler-") as folder:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("/* Controlled framework API; see handler_test.c. */\n")
 
-    def compile_handler(binary, label, flags, count=8, name_max=24):
+    def compile_handler(binary, label, flags, count=8, name_max=24, macro_bytes=256):
         return subprocess.run(
             [
                 "cc",
@@ -70,7 +70,7 @@ with tempfile.TemporaryDirectory(prefix="runtime-macro-rpc-handler-") as folder:
                 *flags,
                 f"-DCONFIG_ZMK_RUNTIME_MACRO_COUNT={count}",
                 f"-DCONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN={name_max}",
-                "-DCONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES=256",
+                f"-DCONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES={macro_bytes}",
                 f'-DHANDLER_SOURCE="{args.source.resolve()}"',
                 f'-DTEST_VARIANT="{label}"',
                 "-I" + str(work),
@@ -111,10 +111,29 @@ with tempfile.TemporaryDirectory(prefix="runtime-macro-rpc-handler-") as folder:
             env={**os.environ, "ASAN_OPTIONS": "detect_leaks=0"},
         )
 
-    # Limits the RPC messages cannot carry must not build.
+    # A supported larger body must not move its staging onto the 4 KiB RPC
+    # stack. The original pair of automatic 2048-byte arrays fails this guard.
+    large = work / "rpc-handler-large-body"
+    built = compile_handler(
+        large, "large-body", ["-O2", "-Wframe-larger-than=2048"], macro_bytes=2048
+    )
+    if built.returncode:
+        raise SystemExit(built.stdout + built.stderr)
+    subprocess.run([str(large)], check=True, timeout=20)
+
+    # The documented 32 content bytes plus NUL must fit; 33 content bytes
+    # remain outside the wire capacity. Preserve slot-capacity rejection.
+    accepted = compile_handler(
+        work / "rpc-handler-max-name", "max-name", ["-O2"], name_max=32
+    )
+    if accepted.returncode:
+        raise SystemExit(accepted.stdout + accepted.stderr)
+    # This is a compile-capacity control. The runtime fixture below encodes a
+    # configured-limit+1 name and requires that value to fit the wire field;
+    # the 32-byte wire limit itself is exercised by tests/review/test_name_wire.py.
     for what, overrides, message in (
         ("17 slots", {"count": 17}, "ListMacrosResponse capacity"),
-        ("32-byte names", {"name_max": 32}, "RPC name capacity"),
+        ("33-byte names", {"name_max": 33}, "RPC name capacity"),
     ):
         rejected = compile_handler(
             work / "rpc-handler-oversized", "oversized", ["-O0"], **overrides
@@ -122,5 +141,5 @@ with tempfile.TemporaryDirectory(prefix="runtime-macro-rpc-handler-") as folder:
         if rejected.returncode == 0 or message not in rejected.stderr:
             raise SystemExit(f"{what} built against the RPC message limits")
     print(
-        "runtime macro RPC capacity: PASS (17 slots and 32-byte names rejected at build time)"
+        "runtime macro RPC capacity: PASS (32-byte names accepted; 17 slots and 33-byte names rejected)"
     )

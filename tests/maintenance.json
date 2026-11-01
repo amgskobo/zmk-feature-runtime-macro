@@ -40,5 +40,12 @@
     "contract": "Session retirement, latest selection, independent busy ownership, cleared deadlines and recoverable validated edits; uint32 overflow rejection preserves valid decoder inputs.",
     "controls": "Failing original editor/decoder; existing fractional-tap rejection, valid decoder boundaries, StrictMode, timeout and unrelated provider updates remain positive controls.",
     "limits": "Controlled DOM/RPC transport; no physical delivery or rollback guarantee for requests already dispatched. Multi-request body writes remain non-atomic."
-  }
+  },
+  "rpc_reset_and_stack": {
+    "fixture": "tests/rpc-handler/handler_test.c and run.py",
+    "contract": "Memory-only reset without a devicetree default refuses without deletion; defaults reset in memory; explicit persistent reset can delete. Shared edit staging keeps supported large macro bodies off the RPC stack.",
+    "negative_control": "Original reset deletes and fails the unchanged refusal assertion. With only reset repaired, the original automatic staging fails the 2048-byte frame guard at MAX_BYTES=2048 after passing ordinary optimized and sanitizer scenarios.",
+    "limits": "Real handler/nanopb with controlled storage calls; full native owner separately verifies storage/playback. No physical stack high-water or flash-durability measurement."
+  },
+  "review_dependency_resolution": "Canonical owner resolves actual selected zmk/nanopb west paths. Unset external path variables pass; the original entry fails with missing-path errors."
 }
