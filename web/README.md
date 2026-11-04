@@ -42,9 +42,26 @@ finishing another read does not enable writes while an earlier write is pending.
 Every request has a five-second deadline that is cleared on completion,
 replacement or unmount.
 
-A request already sent may still modify the device. Body updates use separate
-resize and step RPCs and have no transaction rollback; reread after reconnect or
+Core lock notifications retire pending calls synchronously and clear the editor
+body and drafts. Unlock starts a different request lifetime and reloads a fresh
+editor; a previous write cannot send its remaining resize/append operations.
+This includes a lock and unlock delivered before the next React render. The
+request already dispatched may have modified the keyboard.
+
+A request already sent may still modify the device. Full body updates clear
+the old steps in memory and append the new steps; only the completed body is
+persisted by Save. Intermediate prefixes fit within the final body's action
+and byte budgets. These separate RPCs have no transaction rollback; reread after reconnect or
 failure before retrying. Session retirement provides no device-side cancellation.
+
+Rename and refresh keep the current macro's unsubmitted body and JSON draft.
+An older read or save completion does not replace edits made while it was
+pending. Selecting another macro or replacing the connection retires that
+editor as before. Save submits the version present when it was pressed.
+Name, next-creation-name and global tap edits have independent ownership too;
+metadata reads and successful older requests preserve newer field drafts.
+Completing Create opens its new macro only when the user has not selected
+another macro since that request started.
 
 Invalid edits show an error and keep the editor available for correction. Delay
 steps accept integer milliseconds from 0 through 60000; tap duration accepts

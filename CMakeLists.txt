@@ -8,6 +8,7 @@ if(CONFIG_ZMK_RUNTIME_MACRO)
 
     if(CONFIG_ZMK_RUNTIME_MACRO_TEST)
         target_sources(app PRIVATE tests/ztest/runtime_macro_test.c)
+        zephyr_link_libraries(-Wl,--wrap=zmk_custom_setting_public_key)
     endif()
 
     if(CONFIG_ZMK_RUNTIME_MACRO_DT_DEFAULTS_TEST)

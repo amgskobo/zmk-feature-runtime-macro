@@ -22,10 +22,11 @@
   "native_verification": "tests/native_verifier.py: actual exit, registered test completion, raw ordered logs, unchanged snapshots, identical binary repeated three times.",
   "custom_settings_dependency": {
     "url": "https://github.com/amgskobo/zmk-feature-custom-settings",
-    "revision": "b91a8ceb0a57a0cf41b34270752d79463e2848fa",
+    "revision": "c4071b095c3007d1deb055c609603ca9b5897d14",
     "required_contract": "Same-slot keyspace rename, payload/storage identity and existing memory/persist lifecycle; both production import and isolated tests select this exact dependency. The selected registry also serializes mutations and retains notification targets through dispatch.",
     "regression": "Previous cormoran c6a7fef dependency lacks rename and fails enabled ARM/native links. Existing lifecycle fixtures retain same-slot rename assertions.",
-    "publication": "The selected exact commit is published at the declared fork URL; prepare and verify that revision explicitly in the isolated container workspace."
+    "publication": "The selected exact commit is published at the declared fork URL; prepare and verify that revision explicitly in the isolated container workspace.",
+    "selected_prerequisite": "The selected c4071b095c3007d1deb055c609603ca9b5897d14 commit includes copy_public_key and encode-time local notification authorization. Production and isolated-test manifests pin that same implementation; a different working override remains a separate source snapshot requiring explicit identity and review."
   },
   "timeout_width": {
     "entry": "python3 -m unittest discover -s tests -p test_timeout_width.py -v",
@@ -37,7 +38,7 @@
       "tests/web/sessionLifecycle.spec.tsx",
       "tests/web/macroCodecBounds.spec.ts"
     ],
-    "contract": "Session retirement, latest selection, independent busy ownership, cleared deadlines and recoverable validated edits; uint32 overflow rejection preserves valid decoder inputs.",
+    "contract": "Session retirement, latest selection, independent busy ownership, cleared deadlines and recoverable validated edits; body/JSON draft ownership survives rename/refresh and older read/save completions; name, next-creation-name and global tap drafts independently survive metadata reads and older mutation completions; full writes clear then append final prefixes without intermediate capacity inflation; uint32 overflow rejection preserves valid decoder inputs.",
     "controls": "Failing original editor/decoder; existing fractional-tap rejection, valid decoder boundaries, StrictMode, timeout and unrelated provider updates remain positive controls.",
     "limits": "Controlled DOM/RPC transport; no physical delivery or rollback guarantee for requests already dispatched. Multi-request body writes remain non-atomic."
   },
@@ -47,5 +48,19 @@
     "negative_control": "Original reset deletes and fails the unchanged refusal assertion. With only reset repaired, the original automatic staging fails the 2048-byte frame guard at MAX_BYTES=2048 after passing ordinary optimized and sanitizer scenarios.",
     "limits": "Real handler/nanopb with controlled storage calls; full native owner separately verifies storage/playback. No physical stack high-water or flash-durability measurement."
   },
-  "review_dependency_resolution": "Canonical owner resolves actual selected zmk/nanopb west paths. Unset external path variables pass; the original entry fails with missing-path errors."
+  "review_dependency_resolution": "Canonical owner resolves actual selected zmk/nanopb west paths. Unset external path variables pass; the original entry fails with missing-path errors.",
+  "review_identity_and_authorization": {
+    "fixtures": "tests/ztest/runtime_macro_test.c slot addressing; tests/rpc-handler/handler_test.c; tests/web/sessionLifecycle.spec.tsx",
+    "contract": "Caller-owned guarded slot-name copies with no truncation, stored body error before success framing, late-lock body encoding refusal, and retired Web calls/drafts/full writes across lock and unlock. Existing fixtures, snapshots, packed admission and full-prefix rewrite controls retained.",
+    "negative_controls": "tests/review_negative_control.py restores borrowed-name, truncate-name, get-admission, encode-lock, web-lock or timer-cleanup only in isolated owner sources; unchanged corresponding assertions must execute and fail.",
+    "limits": "Controlled real registry/kernel/nanopb and DOM boundaries; no physical transport, flash retention or rollback claim. Candidate dependency source must be identified explicitly."
+  },
+  "rpc_handler_artifacts": {
+    "entry": "python3 tests/rpc-handler/run.py --output FRESH_ABSOLUTE_OUTPUT; default --variant all is the canonical complete handler matrix",
+    "focused": "--variant optimized|sanitized|large-body selects one executable; max-name is compile-only acceptance; oversize retains both exact slot/name compiler refusals. Focused output is explicitly not the canonical matrix.",
+    "contract": "Keep all original compiler flags, C assertions and default counts. Retain generator/generated inputs, selected source/dependency hashes, compiler commands/stdout/stderr, binary/SHA256, actual exit, ordered runtime log and source drift on success or first failure.",
+    "repeats": "Default executions remain one per executable variant. Fault checks retain the first binary after failure, verify its hash, then execute that same binary in two additional fresh initial-state directories with the recorded environment; three intended C assertion failures required per executable variant.",
+    "limits": "Artifact/focused controls do not replace complete owner/native/Web checks or establish physical transport. Existing evidence paths are refused."
+  },
+  "web_timer_ownership": "Frozen lifetime resource with private mutable state; synchronous lock retirement, batched lock/unlock and StrictMode remain covered. Jest runAllTicks drains only fake microtasks before unchanged zero assertions; a real unresolved5s RPC must remain counted1 with no clock advance before retirement. timer-cleanup fault must fail zero-timer assertions."
 }

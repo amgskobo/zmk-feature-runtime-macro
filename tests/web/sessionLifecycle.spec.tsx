@@ -5,6 +5,7 @@ import {
   ZMKAppProvider,
 } from "@cormoran/zmk-studio-react-hook/testing";
 import { call_rpc } from "@zmkfirmware/zmk-studio-ts-client";
+import { LockState } from "@zmkfirmware/zmk-studio-ts-client/core";
 import { RuntimeMacroEditor, SUBSYSTEM_IDENTIFIER } from "../../web/src/App";
 import {
   Request,
@@ -94,6 +95,13 @@ function bodyWriteButton() {
 function macroButton(name: string) {
   return screen.getByRole("button", { name: new RegExp(`^${name} slot`) });
 }
+function notifyLock(value: ReturnType<typeof app>, state: LockState) {
+  for (const [subscription] of (value.onNotification as jest.Mock).mock.calls) {
+    if (subscription.type === "core") {
+      subscription.callback({ lockStateChanged: state });
+    }
+  }
+}
 function replacement(old: ReturnType<typeof app>, change: string) {
   const next = app(
     change === "index"
@@ -154,6 +162,71 @@ describe("Runtime Macro session and editor ownership", () => {
     jest.useRealTimers();
   });
 
+  it("retires a delayed body read and clears protected editor state on lock", async () => {
+    const current = app();
+    render(panel(current));
+    await loaded();
+    const pending = deferred<ReturnType<typeof body>>();
+    intercept = (request) =>
+      request.getMacro?.slot === 1 ? pending.promise : undefined;
+    fireEvent.click(macroButton("Beta"));
+    await flush();
+    act(() => notifyLock(current, LockState.ZMK_STUDIO_CORE_LOCK_STATE_LOCKED));
+    await flush();
+    expect(screen.getByText(/Studio is locked/i)).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("Alpha")).not.toBeInTheDocument();
+    expect(screen.queryAllByLabelText("Delay ms")).toHaveLength(0);
+    // Modern Jest counts React act's fake microtasks alongside real deadlines.
+    // Drain only those jobs; this does not advance or clear any timeout.
+    jest.runAllTicks();
+    expect(jest.getTimerCount()).toBe(0);
+    const mark = requests().length;
+    await act(async () => pending.resolve(body(macros[1])));
+    await flush();
+    expect(requests().slice(mark)).toHaveLength(0);
+    expect(screen.queryByDisplayValue("Beta")).not.toBeInTheDocument();
+    jest.runAllTicks();
+    expect(jest.getTimerCount()).toBe(0);
+    intercept = undefined;
+    act(() =>
+      notifyLock(current, LockState.ZMK_STUDIO_CORE_LOCK_STATE_UNLOCKED),
+    );
+    await loaded();
+    expect(screen.getByDisplayValue("Alpha")).toBeInTheDocument();
+    expect(bodyWriteButton()).toBeEnabled();
+  });
+
+  it("does not resume an old body write across a batched lock and unlock", async () => {
+    const current = app();
+    render(panel(current));
+    await loaded();
+    const pending = deferred<ReturnType<typeof status>>();
+    intercept = (request) =>
+      request.setMacroStepCount ? pending.promise : undefined;
+    fireEvent.click(bodyWriteButton());
+    await flush();
+    expect(requests().filter((r) => r.request.setMacroStepCount)).toHaveLength(
+      1,
+    );
+    jest.runAllTicks();
+    expect(jest.getTimerCount()).toBe(1);
+    act(() => {
+      notifyLock(current, LockState.ZMK_STUDIO_CORE_LOCK_STATE_LOCKED);
+      notifyLock(current, LockState.ZMK_STUDIO_CORE_LOCK_STATE_UNLOCKED);
+    });
+    await loaded();
+    await act(async () => pending.resolve(status()));
+    await flush();
+    expect(requests().filter((r) => r.request.setMacroStepCount)).toHaveLength(
+      1,
+    );
+    expect(requests().filter((r) => r.request.setMacroStep)).toHaveLength(0);
+    expect(requests().filter((r) => r.request.appendMacroStep)).toHaveLength(0);
+    expect(bodyWriteButton()).toBeEnabled();
+    jest.runAllTicks();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
   it.each(["connection", "index", "catalog"])(
     "starts a fresh editor and retires a pending create on %s replacement",
     async (change) => {
@@ -204,6 +277,9 @@ describe("Runtime Macro session and editor ownership", () => {
       });
       await flush();
       expect(requests().filter((r) => r.request.setMacroStep)).toHaveLength(0);
+      expect(requests().filter((r) => r.request.appendMacroStep)).toHaveLength(
+        0,
+      );
     },
   );
 
@@ -276,6 +352,39 @@ describe("Runtime Macro session and editor ownership", () => {
     expect(screen.getByDisplayValue("Created")).toBeInTheDocument();
   });
 
+  it("keeps a later macro selection and draft when an earlier Create finishes", async () => {
+    render(panel(app()));
+    await loaded();
+    const pending = deferred<ReturnType<typeof status>>();
+    intercept = (request) =>
+      request.createMacro
+        ? pending.promise.then(() => {
+            macros.push({
+              slot: macros.length,
+              name: request.createMacro!.name,
+              steps: [],
+            });
+            return status();
+          })
+        : undefined;
+    fireEvent.change(screen.getByPlaceholderText("New macro name"), {
+      target: { value: "Created" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await flush();
+    fireEvent.click(macroButton("Beta"));
+    await flush();
+    expect(screen.getByDisplayValue("Beta")).toBeInTheDocument();
+    const json = document.querySelector("textarea")!;
+    fireEvent.change(json, { target: { value: "[newer Beta draft" } });
+    await act(async () => pending.resolve(status()));
+    await flush();
+    expect(macros.some((macro) => macro.name === "Created")).toBe(true);
+    expect(screen.getByDisplayValue("Beta")).toBeInTheDocument();
+    expect(json).toHaveValue("[newer Beta draft");
+    expect(bodyWriteButton()).toBeEnabled();
+  });
+
   it("keeps a renamed non-first macro selected", async () => {
     render(panel(app()));
     await loaded();
@@ -289,11 +398,343 @@ describe("Runtime Macro session and editor ownership", () => {
     expect(screen.getByDisplayValue("Renamed")).toBeInTheDocument();
   });
 
+  it("keeps an unsubmitted body and JSON draft across rename and refresh", async () => {
+    render(panel(app()));
+    await loaded();
+    fireEvent.change(screen.getAllByLabelText("Delay ms")[0], {
+      target: { value: "99" },
+    });
+    const json = document.querySelector("textarea")!;
+    fireEvent.change(json, { target: { value: "[unfinished draft" } });
+    fireEvent.change(screen.getByDisplayValue("Alpha"), {
+      target: { value: "Renamed" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    await flush();
+    expect(screen.getByDisplayValue("Renamed")).toBeInTheDocument();
+    expect(screen.getAllByLabelText("Delay ms")[0]).toHaveValue(99);
+    expect(json).toHaveValue("[unfinished draft");
+    expect(macros[0].steps[0].delay?.delayMs).toBe(1);
+    expect(
+      requests().filter(
+        (r) =>
+          r.request.setMacroStepCount ||
+          r.request.setMacroStep ||
+          r.request.appendMacroStep,
+      ),
+    ).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await flush();
+    expect(screen.getAllByLabelText("Delay ms")[0]).toHaveValue(99);
+    expect(json).toHaveValue("[unfinished draft");
+  });
+
+  it("keeps the next name draft when an earlier Rename finishes", async () => {
+    render(panel(app()));
+    await loaded();
+    const pending = deferred<ReturnType<typeof status>>();
+    intercept = (request) =>
+      request.renameMacro
+        ? pending.promise.then(() => {
+            macros.find(
+              (macro) => macro.name === request.renameMacro!.oldName,
+            )!.name = request.renameMacro!.newName;
+            return status();
+          })
+        : undefined;
+    const name = screen.getByDisplayValue("Alpha");
+    fireEvent.change(name, { target: { value: "First rename" } });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    await flush();
+    expect(name).toBeEnabled();
+    fireEvent.change(name, { target: { value: "Next rename draft" } });
+    await act(async () => pending.resolve(status()));
+    await flush();
+    expect(macros[0].name).toBe("First rename");
+    expect(name).toHaveValue("Next rename draft");
+    expect(screen.getByRole("button", { name: "Rename" })).toBeEnabled();
+    expect(requests().filter((r) => r.request.renameMacro)).toHaveLength(1);
+  });
+
+  it("keeps the next creation name while a prior Create completes", async () => {
+    render(panel(app()));
+    await loaded();
+    const pending = deferred<ReturnType<typeof status>>();
+    intercept = (request) =>
+      request.createMacro
+        ? pending.promise.then(() => {
+            macros.push({
+              slot: macros.length,
+              name: request.createMacro!.name,
+              steps: [],
+            });
+            return status();
+          })
+        : undefined;
+    const name = screen.getByPlaceholderText("New macro name");
+    fireEvent.change(name, { target: { value: "First creation" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await flush();
+    fireEvent.change(name, { target: { value: "Next creation draft" } });
+    await act(async () => pending.resolve(status()));
+    await flush();
+    expect(macros.some((macro) => macro.name === "First creation")).toBe(true);
+    expect(name).toHaveValue("Next creation draft");
+    expect(screen.getByRole("button", { name: "Create" })).toBeEnabled();
+  });
+
+  it("keeps an unsubmitted tap setting when another action refreshes metadata", async () => {
+    render(panel(app()));
+    await loaded();
+    fireEvent.change(screen.getByLabelText("Tap ms"), {
+      target: { value: "75" },
+    });
+    fireEvent.change(screen.getByDisplayValue("Alpha"), {
+      target: { value: "Renamed" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    await flush();
+    expect(screen.getByDisplayValue("Renamed")).toBeInTheDocument();
+    expect(screen.getByLabelText("Tap ms")).toHaveValue(75);
+    expect(requests().filter((r) => r.request.setTapMs)).toHaveLength(0);
+  });
+
+  it("keeps a tap setting edited while its metadata read is pending", async () => {
+    render(panel(app()));
+    await loaded();
+    const pending = deferred<ReturnType<typeof globalSettings>>();
+    intercept = (request) =>
+      request.getMacroGlobalSettings ? pending.promise : undefined;
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await flush();
+    fireEvent.change(screen.getByLabelText("Tap ms"), {
+      target: { value: "75" },
+    });
+    await act(async () => pending.resolve(globalSettings()));
+    await flush();
+    expect(screen.getByLabelText("Tap ms")).toHaveValue(75);
+  });
+
+  it("keeps a newer tap draft after saving an older value and refreshing", async () => {
+    render(panel(app()));
+    await loaded();
+    let storedTapMs = 30;
+    const pending = deferred<ReturnType<typeof status>>();
+    intercept = (request) => {
+      if (request.getMacroGlobalSettings)
+        return Promise.resolve(
+          reply({
+            getMacroGlobalSettings: {
+              settings: { tapMs: storedTapMs, keyPressBehaviorId: 1 },
+            },
+          }),
+        );
+      if (request.setTapMs)
+        return pending.promise.then(() => {
+          storedTapMs = request.setTapMs!.tapMs;
+          return status();
+        });
+      return undefined;
+    };
+    fireEvent.change(screen.getByLabelText("Tap ms"), {
+      target: { value: "50" },
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "Save" })[0]);
+    await flush();
+    fireEvent.change(screen.getByLabelText("Tap ms"), {
+      target: { value: "75" },
+    });
+    await act(async () => pending.resolve(status()));
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await flush();
+    expect(storedTapMs).toBe(50);
+    expect(screen.getByLabelText("Tap ms")).toHaveValue(75);
+  });
+
+  it("keeps newer edits when an earlier body write finishes", async () => {
+    render(panel(app()));
+    await loaded();
+    const pending = deferred<ReturnType<typeof status>>();
+    intercept = (request) => {
+      if (request.setMacroStepCount)
+        return pending.promise.then(() => {
+          macros[0].steps =
+            request.setMacroStepCount!.stepCount === 0 ? [] : macros[0].steps;
+          return status();
+        });
+      if (request.appendMacroStep)
+        macros[0].steps.push(request.appendMacroStep.step!);
+      if (request.setMacroStep)
+        macros[0].steps[request.setMacroStep.stepIndex] =
+          request.setMacroStep.step!;
+      return undefined;
+    };
+    fireEvent.change(screen.getAllByLabelText("Delay ms")[0], {
+      target: { value: "50" },
+    });
+    fireEvent.click(bodyWriteButton());
+    await flush();
+    expect(bodyWriteButton()).toBeDisabled();
+    fireEvent.change(screen.getAllByLabelText("Delay ms")[0], {
+      target: { value: "99" },
+    });
+    const json = document.querySelector("textarea")!;
+    fireEvent.change(json, { target: { value: "[newer JSON draft" } });
+    await act(async () => pending.resolve(status()));
+    await flush();
+    expect(bodyWriteButton()).toBeEnabled();
+    expect(macros[0].steps[0].delay?.delayMs).toBe(50);
+    expect(screen.getAllByLabelText("Delay ms")[0]).toHaveValue(99);
+    expect(json).toHaveValue("[newer JSON draft");
+  });
+
+  it("preserves a body edit made while its refreshed read is pending", async () => {
+    render(panel(app()));
+    await loaded();
+    const pending = deferred<ReturnType<typeof body>>();
+    intercept = (request) =>
+      request.getMacro?.slot === 0 ? pending.promise : undefined;
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await flush();
+    fireEvent.change(screen.getAllByLabelText("Delay ms")[0], {
+      target: { value: "99" },
+    });
+    await act(async () => pending.resolve(body(macros[0])));
+    await flush();
+    expect(screen.getAllByLabelText("Delay ms")[0]).toHaveValue(99);
+  });
+
+  it.each([false, true])(
+    "persists only a completed full rewrite (persist=%s)",
+    async (persist) => {
+      render(panel(app()));
+      await loaded();
+      fireEvent.click(
+        persist
+          ? screen.getAllByRole("button", { name: "Save" }).at(-1)!
+          : bodyWriteButton(),
+      );
+      await flush();
+      const writes = requests()
+        .map((r) => r.request)
+        .filter((r) => r.setMacroStepCount || r.appendMacroStep);
+      expect(writes).toHaveLength(3);
+      expect(writes[0].setMacroStepCount).toMatchObject({
+        slot: 0,
+        stepCount: 0,
+        persist: false,
+      });
+      expect(writes[1].appendMacroStep).toMatchObject({
+        slot: 0,
+        step: { delay: { delayMs: 1 } },
+        persist: false,
+      });
+      expect(writes[2].appendMacroStep).toMatchObject({
+        slot: 0,
+        step: { delay: { delayMs: 2 } },
+        persist,
+      });
+    },
+  );
+
+  it("persists an empty body when Save has no steps to append", async () => {
+    render(panel(app()));
+    await loaded();
+    fireEvent.click(macroButton("Beta"));
+    await flush();
+    fireEvent.click(screen.getAllByRole("button", { name: "Save" }).at(-1)!);
+    await flush();
+    const writes = requests()
+      .map((r) => r.request)
+      .filter((r) => r.setMacroStepCount || r.appendMacroStep);
+    expect(writes).toHaveLength(1);
+    expect(writes[0].setMacroStepCount).toMatchObject({
+      slot: 1,
+      stepCount: 0,
+      persist: true,
+    });
+  });
+
+  it("rewrites a valid full body without retaining capacity-consuming old steps", async () => {
+    const keys = { keyTapSequence: { packedKeys: new Uint8Array(63).fill(4) } };
+    macros[0].steps = [{ delay: { delayMs: 0 } }, keys];
+    const wanted = [keys, { delay: { delayMs: 0 } }];
+    intercept = (request) => {
+      const edit =
+        request.setMacroStepCount ??
+        request.setMacroStep ??
+        request.appendMacroStep;
+      if (!edit) return undefined;
+      const macro = macros.find((m) => m.slot === edit.slot)!;
+      let steps = [...macro.steps];
+      if (request.setMacroStepCount) {
+        const count = request.setMacroStepCount.stepCount;
+        steps = steps.slice(0, count);
+        while (steps.length < count) steps.push({ delay: { delayMs: 0 } });
+      }
+      if (request.setMacroStep)
+        steps[request.setMacroStep.stepIndex] = request.setMacroStep.step!;
+      if (request.appendMacroStep) steps.push(request.appendMacroStep.step!);
+      // Independent action-budget oracle, including empty packed sequences.
+      const actions = steps.reduce(
+        (count, step) => count + (step.keyTapSequence?.packedKeys.length ?? 1),
+        0,
+      );
+      if (actions > 64)
+        return Promise.resolve(
+          reply({ error: { message: "Action capacity exceeded" } }),
+        );
+      macro.steps = steps;
+      return Promise.resolve(status());
+    };
+    render(panel(app()));
+    await loaded();
+    const json = document.querySelector("textarea")!;
+    fireEvent.change(json, {
+      target: {
+        value: JSON.stringify([
+          ...Array.from({ length: 63 }, () => ({
+            action: "tap",
+            binding: { type: "raw", zmk: "local-id:1 458756 0" },
+          })),
+          { action: "delay", delayTime: 0 },
+        ]),
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    await flush();
+    fireEvent.click(bodyWriteButton());
+    await flush();
+    expect(macros[0].steps).toEqual(wanted);
+    expect(
+      screen.queryByText("Action capacity exceeded"),
+    ).not.toBeInTheDocument();
+    const writes = requests().filter(
+      (r) => r.request.setMacroStepCount || r.request.appendMacroStep,
+    );
+    expect(writes[0].request.setMacroStepCount?.stepCount).toBe(0);
+    expect(
+      writes.slice(1).every((r) => Boolean(r.request.appendMacroStep)),
+    ).toBe(true);
+    expect(bodyWriteButton()).toBeEnabled();
+  });
+
   it("disposes owned pending request timers immediately on unmount", async () => {
     (call_rpc as jest.Mock).mockReturnValue(new Promise(() => {}));
     const view = render(panel(app()));
     await loaded();
     expect(requests()).toHaveLength(1);
+    const before = Date.now();
+    let microtaskRan = false;
+    queueMicrotask(() => {
+      microtaskRan = true;
+    });
+    jest.runAllTicks();
+    expect(microtaskRan).toBe(true);
+    expect(Date.now()).toBe(before);
+    // A genuinely outstanding RPC still owns its 5s deadline after the drain.
+    expect(jest.getTimerCount()).toBe(1);
     view.unmount();
     await flush();
     jest.runAllTicks();

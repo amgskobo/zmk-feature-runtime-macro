@@ -362,6 +362,8 @@ static int resolve_slot_name(uint32_t slot, char *name, size_t name_capacity,
         set_error(resp, "Slot out of range");
     } else if (ret == -ENOENT) {
         set_error(resp, NO_MACRO_IN_SLOT);
+    } else if (ret == -ENAMETOOLONG) {
+        set_error(resp, "Stored macro name exceeds the supported limit");
     }
     return ret;
 }
@@ -370,9 +372,9 @@ static int resolve_slot_name(uint32_t slot, char *name, size_t name_capacity,
  * into this once; encode_macro_steps_cb() then streams each MacroStep submessage
  * out of it at pb_encode time. Because MacroDetail.steps is a pb_callback_t
  * (see the .options file), the response never materializes a steps[64] array
- * (~4.6 KB) - that array on the RPC thread stack is what overflowed the default
- * CONFIG_ZMK_STUDIO_RPC_THREAD_STACK_SIZE=4096 (watchdog K_ERR_STACK_CHK_FAIL on
- * hardware). 256 B (one macro), and safe as a single shared instance because the
+ * (~4.6 KB), which exceeds the default
+ * CONFIG_ZMK_STUDIO_RPC_THREAD_STACK_SIZE=4096 before other call frames.
+ * Staging uses CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES and is shared because the
  * Studio RPC dispatch is single-threaded: one request is in flight at a time,
  * the same invariant the static response buffer already relies on. */
 static struct {
@@ -387,6 +389,10 @@ static uint8_t macro_edit_output[CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES];
 
 static bool encode_macro_steps_cb(pb_ostream_t *stream, const pb_field_t *field, void *const *arg) {
     ARG_UNUSED(arg);
+
+    if (zmk_studio_core_get_lock_state() != ZMK_STUDIO_CORE_LOCK_STATE_UNLOCKED) {
+        return false;
+    }
 
     const uint8_t *encoded = get_macro_stream.encoded;
     size_t size = get_macro_stream.size;
@@ -426,6 +432,16 @@ static int handle_get_macro(const cormoran_runtime_macro_GetMacroRequest *req,
     ret = zmk_runtime_macro_read(name, get_macro_stream.encoded, sizeof(get_macro_stream.encoded),
                                  &get_macro_stream.size);
     if (ret < 0) {
+        return ret;
+    }
+
+    /* Validate with the same streaming decoder before selecting success.
+     * Generic settings writes and retained records can contain malformed
+     * bytes even when this module's create/write admission validates them. */
+    pb_size_t step_count;
+    ret = count_steps(get_macro_stream.encoded, get_macro_stream.size, &step_count);
+    if (ret < 0) {
+        set_error(resp, "Stored macro body is malformed");
         return ret;
     }
 
@@ -849,9 +865,8 @@ static bool runtime_macro_rpc_handle_request(const zmk_custom_CallRequest *raw_r
      * here (this RPC's own response already confirms the change to the single
      * Studio client), and its listener runs synchronously in this thread and
      * pb_encodes the notification: at the default CONFIG_ZMK_STUDIO_RPC_THREAD_
-     * STACK_SIZE (4096) that extra encode depth OVERFLOWS the RPC thread stack
-     * on real hardware (MemManage / watchdog K_ERR_STACK_CHK_FAIL - observed on
-     * a XIAO nRF52840 running CreateMacro), and even with headroom it competes
+     * STACK_SIZE (4096) that extra encode depth can exceed the stack budget,
+     * and even with headroom it competes
      * with the pending response on the shared transport. Suppress it for the
      * whole dispatch, exactly as custom-settings brackets its own RPC entry
      * point. Read-only requests raise no event, so bracketing them is harmless. */

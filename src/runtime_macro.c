@@ -261,7 +261,8 @@ static int read_key_tap_sequence(const uint8_t *encoded, size_t size, size_t *of
     if (ret < 0) {
         return ret;
     }
-    if (sequence_size > size - *offset) {
+    if (sequence_size > ZMK_RUNTIME_MACRO_KEY_TAP_SEQUENCE_MAX_KEYS ||
+        sequence_size > size - *offset) {
         return -EINVAL;
     }
 
@@ -767,6 +768,10 @@ int zmk_runtime_macro_rename(const char *old_name, const char *new_name,
 }
 
 int zmk_runtime_macro_name_for_slot(uint32_t slot, char *name, size_t name_capacity) {
+    if (!name || name_capacity == 0) {
+        return -EINVAL;
+    }
+    name[0] = '\0';
     if (slot >= CONFIG_ZMK_RUNTIME_MACRO_COUNT) {
         return -ERANGE;
     }
@@ -774,8 +779,25 @@ int zmk_runtime_macro_name_for_slot(uint32_t slot, char *name, size_t name_capac
         return -ENOENT;
     }
 
-    const char *public_key = zmk_custom_setting_public_key(&runtime_macros.slots[slot].setting);
-    snprintf(name, name_capacity, "%s", strip_prefix(public_key));
+    char public_key[RUNTIME_MACRO_MAX_KEY_LEN];
+    int ret = zmk_custom_setting_copy_public_key(&runtime_macros.slots[slot].setting, public_key,
+                                                 sizeof(public_key));
+    if (ret < 0) {
+        return ret;
+    }
+    size_t prefix_size = sizeof(ZMK_RUNTIME_MACRO_KEY_PREFIX) - 1;
+    if (strncmp(public_key, ZMK_RUNTIME_MACRO_KEY_PREFIX, prefix_size)) {
+        return -EINVAL;
+    }
+    const char *resolved = strip_prefix(public_key);
+    size_t size = strlen(resolved);
+    if (size > CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN || size >= name_capacity) {
+        return -ENAMETOOLONG;
+    }
+    if (size == 0) {
+        return -EINVAL;
+    }
+    memcpy(name, resolved, size + 1);
     return 0;
 }
 
