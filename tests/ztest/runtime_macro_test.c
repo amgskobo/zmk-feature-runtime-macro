@@ -19,7 +19,28 @@
 
 #include "../../src/runtime_macro_codec.h"
 
+#if IS_ENABLED(CONFIG_ZMK_RUNTIME_MACRO_STUDIO_RPC)
+#include <pb_decode.h>
+#include <pb_encode.h>
+#include <cormoran/runtime_macro/runtime_macro.pb.h>
+#include <zmk/studio/core.h>
+#include <zmk/studio/custom.h>
+#endif
+
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
+
+/* A metadata read deliberately intervenes after the old borrowed-key API
+ * returns. Caller-owned copies do not traverse that vulnerable boundary. */
+static bool review_name_interleave;
+static const struct zmk_custom_setting *review_other_name;
+const char *__real_zmk_custom_setting_public_key(const struct zmk_custom_setting *setting);
+const char *__wrap_zmk_custom_setting_public_key(const struct zmk_custom_setting *setting) {
+    const char *key = __real_zmk_custom_setting_public_key(setting);
+    if (review_name_interleave) {
+        __real_zmk_custom_setting_public_key(review_other_name);
+    }
+    return key;
+}
 
 /*
  * A minimal in-RAM fake settings backend, mirroring
@@ -205,6 +226,147 @@ static size_t build_delay_padding_body(uint8_t *buf, size_t total_size) {
  * (1 + 1 + 1 + 62) and decode to 62 queued taps - well under
  * CONFIG_ZMK_RUNTIME_MACRO_QUEUE_SIZE's default of 64. */
 #define PLAYBACK_TEST_KEY_COUNT 62
+
+#if IS_ENABLED(CONFIG_ZMK_RUNTIME_MACRO_STUDIO_RPC)
+extern struct zmk_rpc_custom_subsystem zmk_rpc_custom_subsystem_cormoran__runtime_macro;
+
+static bool find_rpc_submessage(pb_istream_t *input, uint32_t wanted, pb_istream_t *output) {
+    while (input->bytes_left) {
+        pb_wire_type_t wire;
+        uint32_t tag;
+        bool eof;
+        if (!pb_decode_tag(input, &wire, &tag, &eof)) {
+            return false;
+        }
+        if (tag == wanted) {
+            return wire == PB_WT_STRING && pb_make_string_substream(input, output);
+        }
+        if (!pb_skip_field(input, wire)) {
+            return false;
+        }
+    }
+    return false;
+}
+
+/* The registered real handler, framework callback and nanopb must all carry
+ * the same accepted public-API body, rather than only reading raw storage. */
+static int check_packed_rpc(uint32_t slot, size_t expected_keys, size_t expected_steps) {
+    cormoran_runtime_macro_Request request = cormoran_runtime_macro_Request_init_zero;
+    request.which_request_type = cormoran_runtime_macro_Request_get_macro_tag;
+    request.request_type.get_macro.slot = slot;
+    zmk_custom_CallRequest raw = zmk_custom_CallRequest_init_zero;
+    pb_ostream_t input = pb_ostream_from_buffer(raw.payload.bytes, sizeof(raw.payload.bytes));
+    if (!pb_encode(&input, cormoran_runtime_macro_Request_fields, &request)) {
+        return -EINVAL;
+    }
+    raw.payload.size = input.bytes_written;
+    zmk_custom_CallResponse reply = zmk_custom_CallResponse_init_zero;
+    enum zmk_studio_core_lock_state saved = zmk_studio_core_get_lock_state();
+    zmk_studio_core_unlock();
+    bool handled = zmk_rpc_custom_subsystem_cormoran__runtime_macro.handler(&raw, &reply.payload);
+    uint8_t bytes[256];
+    pb_ostream_t output = pb_ostream_from_buffer(bytes, sizeof(bytes));
+    bool encoded = handled && pb_encode(&output, zmk_custom_CallResponse_fields, &reply);
+    if (saved == ZMK_STUDIO_CORE_LOCK_STATE_LOCKED) {
+        zmk_studio_core_lock();
+    }
+    pb_istream_t outer = pb_istream_from_buffer(bytes, output.bytes_written);
+    pb_istream_t payload, response, macro;
+    if (!encoded || !find_rpc_submessage(&outer, zmk_custom_CallResponse_payload_tag, &payload) ||
+        !find_rpc_submessage(&payload, cormoran_runtime_macro_Response_get_macro_tag, &response) ||
+        !find_rpc_submessage(&response, cormoran_runtime_macro_GetMacroResponse_macro_tag,
+                             &macro)) {
+        return -EINVAL;
+    }
+    size_t keys = 0, steps = 0;
+    while (macro.bytes_left) {
+        pb_wire_type_t wire;
+        uint32_t tag;
+        bool eof;
+        if (!pb_decode_tag(&macro, &wire, &tag, &eof)) {
+            return -EINVAL;
+        }
+        if (tag != cormoran_runtime_macro_MacroDetail_steps_tag) {
+            if (!pb_skip_field(&macro, wire)) {
+                return -EINVAL;
+            }
+            continue;
+        }
+        pb_istream_t step_stream;
+        cormoran_runtime_macro_MacroStep step = cormoran_runtime_macro_MacroStep_init_zero;
+        if (wire != PB_WT_STRING || !pb_make_string_substream(&macro, &step_stream) ||
+            !pb_decode(&step_stream, cormoran_runtime_macro_MacroStep_fields, &step) ||
+            !pb_close_string_substream(&macro, &step_stream) ||
+            step.which_step != cormoran_runtime_macro_MacroStep_key_tap_sequence_tag) {
+            return -EINVAL;
+        }
+        for (size_t i = 0; i < step.step.key_tap_sequence.packed_keys.size; ++i) {
+            if (step.step.key_tap_sequence.packed_keys.bytes[i] != 4) {
+                return -EINVAL;
+            }
+        }
+        keys += step.step.key_tap_sequence.packed_keys.size;
+        ++steps;
+    }
+    return keys == expected_keys && steps == expected_steps ? 0 : -EINVAL;
+}
+#endif
+
+static int test_packed_step_wire_bound(void) {
+#if CONFIG_ZMK_RUNTIME_MACRO_QUEUE_SIZE > ZMK_RUNTIME_MACRO_KEY_TAP_SEQUENCE_MAX_KEYS
+    uint8_t body[70] = {ZMK_RUNTIME_MACRO_FORMAT_VERSION, ZMK_RUNTIME_MACRO_OP_KEY_TAP_SEQUENCE,
+                        65};
+    memset(body + 3, 4, 65);
+    if (zmk_runtime_macro_validate_encoded(body, 68) != -EINVAL ||
+        zmk_runtime_macro_create("Packed Bound", body, 68, ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY,
+                                 NULL) != -EINVAL) {
+        LOG_ERR("Oversized packed step was accepted with action capacity %u",
+                CONFIG_ZMK_RUNTIME_MACRO_QUEUE_SIZE);
+        return -EINVAL;
+    }
+    body[2] = 64;
+    uint32_t slot;
+    if (zmk_runtime_macro_create("Packed Bound", body, 67, ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY,
+                                 &slot) < 0) {
+        return -EINVAL;
+    }
+    uint8_t readback[70];
+    size_t size;
+    body[2] = 65;
+    if (zmk_runtime_macro_write("Packed Bound", body, 68, ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY) !=
+        -EINVAL) {
+        return -EINVAL;
+    }
+    body[2] = 64;
+    if (zmk_runtime_macro_read("Packed Bound", readback, sizeof(readback), &size) < 0 ||
+        size != 67 || memcmp(readback, body, size)) {
+        return -EINVAL;
+    }
+#if IS_ENABLED(CONFIG_ZMK_RUNTIME_MACRO_STUDIO_RPC)
+    if (check_packed_rpc(slot, 64, 1) < 0) {
+        return -EINVAL;
+    }
+#endif
+    body[67] = ZMK_RUNTIME_MACRO_OP_KEY_TAP_SEQUENCE;
+    body[68] = 1;
+    body[69] = 4;
+    if (zmk_runtime_macro_write("Packed Bound", body, sizeof(body),
+                                ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY) < 0) {
+        return -EINVAL;
+    }
+#if IS_ENABLED(CONFIG_ZMK_RUNTIME_MACRO_STUDIO_RPC)
+    if (check_packed_rpc(slot, 65, 2) < 0) {
+        return -EINVAL;
+    }
+#endif
+    if (zmk_runtime_macro_delete("Packed Bound") < 0) {
+        return -EINVAL;
+    }
+    LOG_INF("PASS: runtime_macro_packed_wire_bound queue=%u rejected65 accepted64 split65",
+            CONFIG_ZMK_RUNTIME_MACRO_QUEUE_SIZE);
+#endif
+    return 0;
+}
 
 static int seed_playback_macro(void) {
     uint8_t encoded[3 + PLAYBACK_TEST_KEY_COUNT];
@@ -615,6 +777,65 @@ static int test_slot_addressing(void) {
         return -EINVAL;
     }
 
+    review_other_name = zmk_custom_setting_find(ZMK_RUNTIME_MACRO_SUBSYSTEM_ID, "macro/Long Macro");
+    if (!review_other_name) {
+        return -ENOENT;
+    }
+    review_name_interleave = true;
+    ret = zmk_runtime_macro_name_for_slot(slot, name, sizeof(name));
+    review_name_interleave = false;
+    if (ret || strcmp(name, "Slot Addressed")) {
+        LOG_ERR("Concurrent metadata read redirected a slot name: ret=%d", ret);
+        return -EINVAL;
+    }
+    char small[4];
+    if (zmk_runtime_macro_name_for_slot(slot, small, sizeof(small)) != -ENAMETOOLONG ||
+        small[0] != '\0') {
+        return -EINVAL;
+    }
+    if (zmk_runtime_macro_name_for_slot(slot, NULL, sizeof(name)) != -EINVAL ||
+        zmk_runtime_macro_name_for_slot(slot, name, 0) != -EINVAL) {
+        return -EINVAL;
+    }
+    // Preserve the earlier resolved-name write/read control below.
+    ret = zmk_runtime_macro_name_for_slot(slot, name, sizeof(name));
+    if (ret) {
+        return ret;
+    }
+
+    /* Model a live entry retained from a one-byte larger name configuration,
+     * using the actual registry API, then restore today's keyspace limit. */
+    struct zmk_custom_setting_keyspace *space =
+        zmk_custom_settings_keyspace_find_for_key(ZMK_RUNTIME_MACRO_SUBSYSTEM_ID, "macro/");
+    if (!space || space->max_key_len >= CONFIG_ZMK_CUSTOM_SETTINGS_KEY_MAX_LEN) {
+        return -EINVAL;
+    }
+    char long_key[sizeof(ZMK_RUNTIME_MACRO_KEY_PREFIX) + CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN + 1];
+    size_t prefix_size = sizeof(ZMK_RUNTIME_MACRO_KEY_PREFIX) - 1;
+    memcpy(long_key, ZMK_RUNTIME_MACRO_KEY_PREFIX, prefix_size);
+    memset(long_key + prefix_size, 'x', CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN + 1);
+    long_key[sizeof(long_key) - 1] = '\0';
+    size_t old_limit = space->max_key_len;
+    space->max_key_len++;
+    const struct zmk_custom_setting *long_entry = NULL;
+    ret = zmk_custom_setting_keyspace_create(
+        space, long_key, &ZMK_CUSTOM_SETTING_VALUE_BYTES(ZMK_RUNTIME_MACRO_FORMAT_VERSION),
+        ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY, &long_entry);
+    space->max_key_len = old_limit;
+    if (ret) {
+        return ret;
+    }
+    uint32_t long_slot = 0;
+    while (long_slot < space->max_entries && &space->slots[long_slot].setting != long_entry) {
+        long_slot++;
+    }
+    char refused_name[CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN + 1];
+    ret = zmk_runtime_macro_name_for_slot(long_slot, refused_name, sizeof(refused_name));
+    int cleanup = zmk_custom_setting_keyspace_delete(space, long_key);
+    if (ret != -ENAMETOOLONG || refused_name[0] != '\0' || cleanup) {
+        return -EINVAL;
+    }
+
     uint8_t new_body[8];
     size_t new_body_size = build_delay_padding_body(new_body, sizeof(new_body));
     ret = zmk_runtime_macro_write(name, new_body, new_body_size,
@@ -745,6 +966,11 @@ static int runtime_macro_test_init(void) {
     }
 
     ret = seed_playback_macro();
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = test_packed_step_wire_bound();
     if (ret < 0) {
         return ret;
     }

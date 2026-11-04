@@ -362,6 +362,8 @@ static int resolve_slot_name(uint32_t slot, char *name, size_t name_capacity,
         set_error(resp, "Slot out of range");
     } else if (ret == -ENOENT) {
         set_error(resp, NO_MACRO_IN_SLOT);
+    } else if (ret == -ENAMETOOLONG) {
+        set_error(resp, "Stored macro name exceeds the supported limit");
     }
     return ret;
 }
@@ -387,6 +389,10 @@ static uint8_t macro_edit_output[CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES];
 
 static bool encode_macro_steps_cb(pb_ostream_t *stream, const pb_field_t *field, void *const *arg) {
     ARG_UNUSED(arg);
+
+    if (zmk_studio_core_get_lock_state() != ZMK_STUDIO_CORE_LOCK_STATE_UNLOCKED) {
+        return false;
+    }
 
     const uint8_t *encoded = get_macro_stream.encoded;
     size_t size = get_macro_stream.size;
@@ -426,6 +432,16 @@ static int handle_get_macro(const cormoran_runtime_macro_GetMacroRequest *req,
     ret = zmk_runtime_macro_read(name, get_macro_stream.encoded, sizeof(get_macro_stream.encoded),
                                  &get_macro_stream.size);
     if (ret < 0) {
+        return ret;
+    }
+
+    /* Validate with the same streaming decoder before selecting success.
+     * Generic settings writes and retained records can contain malformed
+     * bytes even when this module's create/write admission validates them. */
+    pb_size_t step_count;
+    ret = count_steps(get_macro_stream.encoded, get_macro_stream.size, &step_count);
+    if (ret < 0) {
+        set_error(resp, "Stored macro body is malformed");
         return ret;
     }
 

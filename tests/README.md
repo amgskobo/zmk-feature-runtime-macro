@@ -38,6 +38,35 @@ establish physical transport/retention. Test-only core/tool dependencies are
 pinned; update pins only after reviewing the new sources and rerunning this
 owner matrix. No network updates are implicit in the owner test command.
 
+The review candidate needs an explicit Custom Settings working snapshot that
+provides `zmk_custom_setting_copy_public_key()` and local notification
+authorization at encoding. The published dependency pin below remains the
+previous baseline; do not treat a working override as that committed input or
+invent a replacement SHA. Record the complete selected source identities.
+
+The slot-addressing fixture retains its earlier write/read, freed-slot and range
+assertions and adds caller-buffer refusal, a retained larger-limit name, and a
+deterministic metadata interleave around the former borrowed-key API. The
+real-codec handler fixture keeps its overflowing-varint input but now requires
+a valid error response before framing success, rather than accepting a broken
+response encoder. Unknown opcode/version, truncated varints/bindings/packed keys
+and invalid packed values receive the same exact error with unchanged bodies.
+An admitted valid reply is locked before encoding, then unlocked as its positive
+control. The Web lifecycle suite covers a delayed body reply and a partial write
+across batched lock/unlock, while preserving existing draft and timeout controls.
+
+`python3 tests/review_negative_control.py "$ISOLATED_OWNER" FAULT` changes only
+the selected boundary in a separate source copy. `borrowed-name` and
+`truncate-name` must fail the unchanged slot-addressing native fixture.
+`get-admission` and `encode-lock` must fail the intended real-codec assertions
+through `tests/rpc-handler/run.py --source "$ISOLATED_OWNER/src/studio/runtime_macro_handler.c"`.
+`web-lock` must fail the two lock lifecycle regressions through the canonical
+Web entry from the isolated owner. `timer-cleanup` omits only deadline cleanup
+and must fail the retained zero-timer assertions after lock/unmount, even after
+fake microtasks have been drained. An executable assertion failure is required;
+link or setup failures are BLOCKED. Existing numerical/width and admission
+negative controls remain required.
+
 `tests/rpc-handler/run.py` compiles the real Studio RPC handler with the real
 nanopb codec, optimized and with ASan/UBSan, against a controlled macro store.
 It also checks that memory-only reset without a devicetree default preserves the
@@ -55,15 +84,83 @@ delay above `ZMK_RUNTIME_MACRO_DELAY_MS_MAX` is refused with its own message,
 and a body with an overflowing varint is refused. Builds whose slot count or name
 length the RPC messages cannot carry must fail.
 
+### Retained RPC-handler evidence and focused variants
+
+Run these commands inside the prepared container and selected west workspace.
+`tests/rpc-handler/run.py --output "$FRESH_OUTPUT"` retains its generated
+nanopb C/headers and controlled headers, copied generator, selected source inputs,
+executables, compiler commands/stdout/stderr, binary SHA-256 files, runtime logs
+and `results.json`. The manifest records canonical/focused scope, source and
+dependency input hashes, command/cwd/environment overrides, elapsed time and
+actual exits. Runtime stdout/stderr share one ordered log. Compile refusals keep
+their distinct stderr files. Input drift fails the run without erasing an earlier
+failure. The absolute output directory must be fresh and outside owner sources;
+existing directories and links are rejected before tool invocation.
+
+Without `--output`, temporary cleanup and the default matrix remain unchanged.
+The default `--variant all` still runs the optimized, ASan/UBSan and large-body
+handler binaries once each, compiles the accepted32-byte name variant, and checks
+both17-slot and33-byte-name compiler refusals using their existing diagnostics.
+All compiler flags, C assertions and default execution counts are retained.
+
+`--variant optimized`, `sanitized` or `large-body` selects one executable case.
+`--variant max-name` is compile-only acceptance; `--variant oversize` retains
+both intentional compile-refusal controls. Every focused run is labelled
+`canonical full matrix NOT RUN` and cannot replace the canonical owner entry.
+
+For example, prepare one isolated `get-admission` or `encode-lock` source with
+the existing helper, then retain each required executable variant separately:
+
+```bash
+python3 tests/rpc-handler/run.py \
+  --source "$ISOLATED_OWNER/src/studio/runtime_macro_handler.c" \
+  --variant sanitized --output "$FRESH_OUTPUT"
+```
+
+A deliberate assertion failure leaves that command nonzero while retaining
+`rpc-handler-sanitized`, its `.sha256` file, `run-sanitized.log` and the exact
+command/environment in `results.json`. Keep that first result; do not rebuild or
+reuse the output directory to obtain the remaining trials. Verify the binary
+hash and execute it in two new initial-state directories in the same prepared
+container. For the sanitized variant the runner explicitly sets
+`ASAN_OPTIONS=detect_leaks=0`; retain any recorded UBSan/LSan options as well.
+
+```bash
+(cd "$FRESH_OUTPUT" && sha256sum -c rpc-handler-sanitized.sha256)
+for repeat in 2 3; do
+  mkdir "$FRESH_OUTPUT/sanitized-run-$repeat"
+  if (cd "$FRESH_OUTPUT/sanitized-run-$repeat" && \
+      ASAN_OPTIONS=detect_leaks=0 "$FRESH_OUTPUT/rpc-handler-sanitized") \
+      >"$FRESH_OUTPUT/run-sanitized-$repeat.log" 2>&1; then
+    result=0
+  else
+    result=$?
+  fi
+  printf '%s\n' "$result" >"$FRESH_OUTPUT/run-sanitized-$repeat.exit"
+done
+```
+
+Repeat the procedure with `optimized` and `large-body`, preserving each exact
+binary and its own fresh evidence. Require the intended C assertion in all three
+logs: `get-admission` fails the error-response discriminator assertion, and
+`encode-lock` fails `!encode_reply(reply, sizeof(reply), &reply_size)`. A nonzero
+runner exit, sanitizer setup failure, compiler refusal or unrelated crash is
+insufficient. The larger-body frame guard and name/slot capacity controls remain
+separate legitimate compiler checks.
+
 The dt-defaults case also installs a 70-character text default with
 `CONFIG_ZMK_RUNTIME_MACRO_QUEUE_SIZE=80`, which must be split into
 KEY_TAP_SEQUENCE steps of at most 64 keys so Studio can open it.
+The Studio fixture independently uses action capacity 80 to require a single
+65-key packed step to be rejected by public validation/create/write. A 64-key
+step and a split 64+1 body remain valid, retain their exact bytes, and stream
+through the registered handler, framework callback and real nanopb codec.
 
 Renaming keeps a macro's slot, so `&rmacro N` bindings keep working. This
 needs the `zmk_custom_setting_keyspace_rename()` API of the custom settings
 fork. Both the production import and isolated test manifest pin
 `amgskobo/zmk-feature-custom-settings` at
-`b91a8ceb0a57a0cf41b34270752d79463e2848fa`, which contains the API.
+`c4071b095c3007d1deb055c609603ca9b5897d14`, which contains the API.
 The previous cormoran `c6a7fef` selection does not implement it and fails enabled
 board/native links; those failures remain valid regression evidence.
 
@@ -140,7 +237,7 @@ the global container budget. Build and lint retain their separate package entrie
 
 ## Web request lifetime and numeric boundaries
 
-`web/sessionLifecycle.spec.tsx` exercises the production editor through the
+`tests/web/sessionLifecycle.spec.tsx` exercises the production editor through the
 locked provider and generated wire messages with a controlled RPC transport.
 Connection, subsystem-index and catalog changes must reset forms and retire
 pending creates and partially dispatched body writes. Latest-selection and
@@ -152,11 +249,28 @@ their deadlines and restore controls, including rejection with undefined, null
 or false. These values must never be decoded as a successful reply. StrictMode
 replay and unrelated provider updates remain usable.
 
+The request lifetime exposes a frozen resource interface over private mutable
+authorization/cancellation state. Lock callbacks retire that resource synchronously;
+they do not mutate a React memoized value. Cleanup/setup replay can reactivate
+the same resource only for the same lifetime, while every lock transition and
+connection/catalog replacement gets a distinct resource.
+
+Modern Jest's timer count includes fake microtask jobs as well as scheduled
+timeouts. The selected Sinon implementation adds its job queue to the timer heap
+count, while Jest `runAllTicks()` calls only `runMicrotasks()`. React's `act`
+schedules fake `queueMicrotask` checks, so drain those jobs before asserting that
+no deadline remains. The original zero assertions stay intact. Positive controls
+queue a microtask, drain it without advancing `Date.now()`, and require a real
+unresolved RPC's five-second timeout to remain counted as one; unmount must then
+leave zero. The partial-write lock case likewise requires one live deadline
+before retirement, and the delayed-body case checks zero before its late reply.
+No `clearAllTimers`, clock advance or permissive count is used to hide a leak.
+
 The same fixture keeps the editor alive for invalid delays, binding fields and
 packed keys, refuses writes before resize, and permits recovery after correction.
 Fractional and out-of-range tap durations never reach the transport. The
 fractional-tap case preserves an existing rejection as a positive control.
-`web/macroCodecBounds.spec.ts` rejects overflowing fifth varint bytes in delay,
+`tests/web/macroCodecBounds.spec.ts` rejects overflowing fifth varint bytes in delay,
 binding and packed-sequence lengths, while retaining valid full uint32 decoding
 and the firmware-compatible overlong-zero form. Editor delay limits remain a
 separate rule from the raw binary codec's uint32 range.
@@ -166,6 +280,18 @@ valid decoder inputs, timeout reporting, StrictMode and unrelated updates are
 positive controls. These are controlled DOM/transport checks. They do not
 establish physical serial delivery or rollback of already-dispatched requests.
 Retirement stops subsequent requests; resize/step writes remain non-atomic.
+Draft regressions cover rename/refresh, a pending body read and a pending Save,
+including independently edited JSON text. The full-rewrite case moves a
+63-key sequence across a delay boundary with a 64-action oracle: clearing the
+old body and appending final prefixes must succeed without a transient overflow.
+Partial resize/replace/append RPC semantics remain covered by the real-handler
+fixture; Web full writes no longer retain old steps or add placeholders.
+Name and next-creation-name controls retain edits made during Rename/Create.
+Global tap controls preserve unsent values across another action, a pending
+metadata read, and the completion of an older tap Save before Refresh.
+Pending Create also preserves a later explicit macro selection and its JSON
+draft, while the unchanged automatic-selection control still opens a new
+macro when no later selection was made.
 Run build and lint separately with `npm --prefix web run build` and
 `npm --prefix web run lint` in the prepared container.
 

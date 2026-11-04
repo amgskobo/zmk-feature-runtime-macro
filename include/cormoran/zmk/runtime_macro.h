@@ -110,9 +110,11 @@ int zmk_runtime_macro_default_encode(const char *name, uint8_t *encoded, size_t 
                                      size_t *encoded_size);
 
 /* Slot <-> name resolution, for the keymap binding UX and RPC list/get
- * responses. Returns -ENOENT if the slot is out of range or currently
- * unbound (no live macro), or (for slot_for_name) if no live macro has this
- * name. */
+ * responses. name_for_slot returns -ERANGE for an out-of-range slot,
+ * -ENOENT for an unbound slot, and -ENAMETOOLONG rather than truncating a
+ * name that does not fit the configured limit or caller buffer. Names are
+ * copied under the registry guard. slot_for_name returns -ENOENT when no
+ * live macro has the requested name. */
 int zmk_runtime_macro_name_for_slot(uint32_t slot, char *name, size_t name_capacity);
 int zmk_runtime_macro_slot_for_name(const char *name, uint32_t *out_slot);
 

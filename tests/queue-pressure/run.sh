@@ -14,7 +14,7 @@ mkdir -p "$output"
 build="$(mktemp -d)"
 trap 'rm -rf -- "$build"' EXIT HUP INT TERM
 cd "$workspace"
-west build -p=always -o=-j2 -s "$zmk_source/app" -d "$build" \
+west build -p=always -o=-j1 -s "$zmk_source/app" -d "$build" \
   -b native_sim//zmk_test_mock -- -DCONFIG_ASSERT=y \
   -DKEYMAP_FILE="$root/tests/queue-pressure/config/pressure.keymap" \
   -DZMK_CONFIG="$root/tests/queue-pressure/config" \

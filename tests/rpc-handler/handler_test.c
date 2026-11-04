@@ -465,8 +465,39 @@ int main(void) {
     call(&req);
     uint8_t reply[512];
     size_t reply_size;
-    assert(!encode_reply(reply, sizeof(reply), &reply_size));
+    expect_error("Stored macro body is malformed");
+    assert(encode_reply(reply, sizeof(reply), &reply_size));
+    assert(reply_size > 0);
     printf("runtime macro rpc varint: PASS overflow refused\n");
+
+    const uint8_t malformed[][5] = {
+        {1, 0xff},
+        {2},
+        {1, ZMK_RUNTIME_MACRO_OP_DELAY, 0x80},
+        {1, ZMK_RUNTIME_MACRO_OP_TAP, 1},
+        {1, ZMK_RUNTIME_MACRO_OP_KEY_TAP_SEQUENCE, 2, 0x04},
+        {1, ZMK_RUNTIME_MACRO_OP_KEY_TAP_SEQUENCE, 1, 0},
+    };
+    const size_t malformed_sizes[] = {2, 1, 3, 3, 4, 4};
+    for (size_t i = 0; i < ARRAY_SIZE(malformed); i++) {
+        memcpy(store[0].body, malformed[i], malformed_sizes[i]);
+        store[0].size = malformed_sizes[i];
+        call(&req);
+        expect_error("Stored macro body is malformed");
+        assert(encode_reply(reply, sizeof(reply), &reply_size) && reply_size > 0);
+        assert(store[0].size == malformed_sizes[i] &&
+               !memcmp(store[0].body, malformed[i], malformed_sizes[i]));
+    }
+    memcpy(store[0].body, resized, sizeof(resized));
+    store[0].size = sizeof(resized);
+    call(&req);
+    assert(response.which_response_type == cormoran_runtime_macro_Response_get_macro_tag);
+    lock_state = ZMK_STUDIO_CORE_LOCK_STATE_LOCKED;
+    assert(!encode_reply(reply, sizeof(reply), &reply_size));
+    lock_state = ZMK_STUDIO_CORE_LOCK_STATE_UNLOCKED;
+    assert(encode_reply(reply, sizeof(reply), &reply_size));
+    printf("runtime macro rpc stored bodies: PASS valid errors, unchanged data and late-lock "
+           "refusal\n");
 
     req = request(cormoran_runtime_macro_Request_set_tap_ms_tag);
     req.request_type.set_tap_ms.tap_ms = ZMK_RUNTIME_MACRO_TAP_MS_MAX + 1;

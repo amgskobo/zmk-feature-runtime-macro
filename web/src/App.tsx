@@ -139,9 +139,19 @@ export function RuntimeMacroEditor() {
   const connection = app?.state.connection;
   const index = app?.findSubsystem(SUBSYSTEM_IDENTIFIER)?.index;
   const catalog = JSON.stringify(app?.state.customSubsystems?.subsystems ?? []);
-  return <RuntimeMacroSession key={sessionKey(connection, index, catalog)} />;
+  const rpc = useSessionRpc(connection, index, catalog);
+  return (
+    <RuntimeMacroSession
+      key={`${sessionKey(connection, index, catalog)}:${rpc.generation}`}
+      rpc={rpc}
+    />
+  );
 }
-function RuntimeMacroSession() {
+function RuntimeMacroSession({
+  rpc,
+}: {
+  rpc: ReturnType<typeof useSessionRpc>;
+}) {
   const zmkApp = useContext(ZMKAppContext);
   const [macros, setMacros] = useState<MacroSummary[]>([]);
   const [selectedName, setSelectedName] = useState<string | null>(null);
@@ -163,13 +173,20 @@ function RuntimeMacroSession() {
   const subsystem = zmkApp?.findSubsystem(SUBSYSTEM_IDENTIFIER);
   const connection = zmkApp?.state.connection;
   const subsystemIndex = subsystem?.index;
-  const serviceReady = connection && subsystemIndex !== undefined;
+  const serviceReady =
+    connection && subsystemIndex !== undefined && !rpc.locked;
 
-  const { call: callPayload, isCurrent } = useSessionRpc(
-    connection,
-    subsystemIndex
-  );
+  const { call: callPayload, isCurrent } = rpc;
   const selectedNameRef = useRef<string | null>(null);
+  const loadedMacroRef = useRef<LoadedMacro | null>(null);
+  const draftRevision = useRef(0);
+  const dirtyDraft = useRef(false);
+  const dirtyJson = useRef(false);
+  const renameRevision = useRef(0);
+  const dirtyRename = useRef(false);
+  const newNameRevision = useRef(0);
+  const tapRevision = useRef(0);
+  const dirtyTap = useRef(false);
   const loadSequence = useRef(0);
   const loadAbort = useRef<AbortController | null>(null);
   const activities = useRef(new Set<symbol>());
@@ -177,6 +194,14 @@ function RuntimeMacroSession() {
     selectedNameRef.current = name;
     setSelectedName(name);
   }, []);
+  const replaceLoadedMacro = useCallback((macro: LoadedMacro | null) => {
+    loadedMacroRef.current = macro;
+    setLoadedMacro(macro);
+  }, []);
+  const markEdited = () => {
+    ++draftRevision.current;
+    dirtyDraft.current = true;
+  };
   const beginActivity = useCallback(() => {
     const token = Symbol();
     activities.current.add(token);
@@ -200,8 +225,14 @@ function RuntimeMacroSession() {
   );
 
   const loadMacro = useCallback(
-    async (slot: number, keyPressId = keyPressBehaviorId) => {
+    async (
+      slot: number,
+      keyPressId = keyPressBehaviorId,
+      preserveDraft = false
+    ) => {
       const generation = ++loadSequence.current;
+      const revisionAtStart = draftRevision.current;
+      const renameAtStart = renameRevision.current;
       loadAbort.current?.abort();
       const controller = new AbortController();
       loadAbort.current = controller;
@@ -219,9 +250,27 @@ function RuntimeMacroSession() {
         if (!macro) throw new Error("Macro was missing from RPC response");
 
         const steps = macro.steps.map(runtimeStepFromRpc);
+        const currentDraft = loadedMacroRef.current;
+        const sameMacro =
+          currentDraft?.slot === macro.slot && currentDraft.name === macro.name;
+        const keepDraft =
+          sameMacro &&
+          ((preserveDraft && dirtyDraft.current) ||
+            draftRevision.current !== revisionAtStart);
         selectName(macro.name);
-        setLoadedMacro({ slot: macro.slot, name: macro.name, steps });
-        setRenameTo(macro.name);
+        const keepRename =
+          sameMacro &&
+          ((preserveDraft && dirtyRename.current) ||
+            renameRevision.current !== renameAtStart);
+        if (!keepRename) {
+          dirtyRename.current = false;
+          setRenameTo(macro.name);
+        }
+        if (keepDraft) return;
+        ++draftRevision.current;
+        dirtyDraft.current = false;
+        dirtyJson.current = false;
+        replaceLoadedMacro({ slot: macro.slot, name: macro.name, steps });
         setJsonText(
           JSON.stringify(
             toKeyboardAbyssSteps(steps, { keyPressBehaviorId: keyPressId }),
@@ -240,11 +289,19 @@ function RuntimeMacroSession() {
         if (loadAbort.current === controller) loadAbort.current = null;
       }
     },
-    [callRPC, keyPressBehaviorId, macros, beginActivity, selectName]
+    [
+      callRPC,
+      keyPressBehaviorId,
+      macros,
+      beginActivity,
+      selectName,
+      replaceLoadedMacro,
+    ]
   );
 
   const refreshList = useCallback(async () => {
     const selectionAtStart = loadSequence.current;
+    const tapAtStart = tapRevision.current;
     const desiredName = selectedNameRef.current;
     const finishActivity = beginActivity();
     setMessage(null);
@@ -266,7 +323,9 @@ function RuntimeMacroSession() {
       );
       const settings = globalSettings.getMacroGlobalSettings?.settings;
       const nextKeyPressBehaviorId = settings?.keyPressBehaviorId || undefined;
-      setTapMs(settings?.tapMs ?? 30);
+      if (!dirtyTap.current && tapRevision.current === tapAtStart) {
+        setTapMs(settings?.tapMs ?? 30);
+      }
       setKeyPressBehaviorId(nextKeyPressBehaviorId);
       setPoolBytesTotal(settings?.poolBytesTotal ?? 0);
       setPoolBytesUsed(settings?.poolBytesUsed ?? 0);
@@ -275,11 +334,15 @@ function RuntimeMacroSession() {
           const stillSelected = list.find((m) => m.name === desiredName);
           await loadMacro(
             (stillSelected ?? list[0]).slot,
-            nextKeyPressBehaviorId
+            nextKeyPressBehaviorId,
+            true
           );
         } else {
           selectName(null);
-          setLoadedMacro(null);
+          replaceLoadedMacro(null);
+          ++draftRevision.current;
+          dirtyDraft.current = false;
+          dirtyJson.current = false;
         }
       }
     } catch (error) {
@@ -291,7 +354,7 @@ function RuntimeMacroSession() {
     } finally {
       finishActivity();
     }
-  }, [callRPC, loadMacro, beginActivity, selectName]);
+  }, [callRPC, loadMacro, beginActivity, selectName, replaceLoadedMacro]);
 
   useEffect(() => {
     if (!serviceReady) return;
@@ -315,7 +378,8 @@ function RuntimeMacroSession() {
 
   const updateStep = (stepIndex: number, nextStep: RuntimeMacroStep) => {
     if (!loadedMacro) return;
-    setLoadedMacro({
+    markEdited();
+    replaceLoadedMacro({
       ...loadedMacro,
       steps: loadedMacro.steps.map((step, index) =>
         index === stepIndex ? nextStep : step
@@ -325,9 +389,13 @@ function RuntimeMacroSession() {
 
   const removeStep = (stepIndex: number) => {
     if (!loadedMacro) return;
+    markEdited();
     const steps = loadedMacro.steps.filter((_, index) => index !== stepIndex);
-    setLoadedMacro({ ...loadedMacro, steps });
-    if (editorEncoding(steps, keyPressBehaviorId).error === null) {
+    replaceLoadedMacro({ ...loadedMacro, steps });
+    if (
+      !dirtyJson.current &&
+      editorEncoding(steps, keyPressBehaviorId).error === null
+    ) {
       setJsonText(
         JSON.stringify(
           toKeyboardAbyssSteps(steps, { keyPressBehaviorId }),
@@ -340,7 +408,8 @@ function RuntimeMacroSession() {
 
   const addStep = () => {
     if (!loadedMacro) return;
-    setLoadedMacro({
+    markEdited();
+    replaceLoadedMacro({
       ...loadedMacro,
       steps: [...loadedMacro.steps, DEFAULT_STEP],
     });
@@ -348,6 +417,8 @@ function RuntimeMacroSession() {
 
   const saveMacro = async (persist: boolean) => {
     if (!loadedMacro) return;
+    const revisionAtStart = draftRevision.current;
+    const selectionAtStart = loadSequence.current;
     const finishActivity = beginActivity();
     setMessage(null);
 
@@ -366,31 +437,49 @@ function RuntimeMacroSession() {
         Request.create({
           setMacroStepCount: {
             slot: loadedMacro.slot,
-            stepCount: rpcSteps.length,
-            persist,
+            stepCount: 0,
+            persist: persist && rpcSteps.length === 0,
           },
         })
       );
+      // Every intermediate body is a prefix of the valid final body. Keeping
+      // old steps or delay placeholders can exceed its byte/action budget.
       for (const [stepIndex, step] of rpcSteps.entries()) {
         await callRPC(
           Request.create({
-            setMacroStep: {
+            appendMacroStep: {
               slot: loadedMacro.slot,
-              stepIndex,
               step: runtimeStepToRpc(step),
-              persist,
+              persist: persist && stepIndex === rpcSteps.length - 1,
             },
           })
         );
       }
 
-      setJsonText(
-        JSON.stringify(toKeyboardAbyssSteps(rpcSteps, codecOptions), null, 2)
-      );
-      setMessage(
-        persist ? "Saved to persistent settings" : "Updated in memory"
-      );
+      const stillOwnsDraft =
+        selectionAtStart === loadSequence.current &&
+        loadedMacroRef.current?.slot === loadedMacro.slot &&
+        draftRevision.current === revisionAtStart;
+      if (stillOwnsDraft) {
+        dirtyDraft.current = dirtyJson.current;
+        replaceLoadedMacro({ ...loadedMacro, steps: rpcSteps });
+        if (!dirtyJson.current) {
+          setJsonText(
+            JSON.stringify(
+              toKeyboardAbyssSteps(rpcSteps, codecOptions),
+              null,
+              2
+            )
+          );
+        }
+      }
+      const savedMessage =
+        (persist ? "Saved to persistent settings" : "Updated in memory") +
+        (!stillOwnsDraft || dirtyJson.current
+          ? ". Current editor draft was kept."
+          : "");
       await refreshList();
+      setMessage(savedMessage);
     } catch (error) {
       if (isRetiredRequest(error)) return;
       setMessage(
@@ -402,6 +491,7 @@ function RuntimeMacroSession() {
   };
 
   const saveTapMs = async (persist: boolean) => {
+    const revisionAtStart = tapRevision.current;
     const finishActivity = beginActivity();
     setMessage(null);
 
@@ -419,10 +509,14 @@ function RuntimeMacroSession() {
           },
         })
       );
+      if (tapRevision.current === revisionAtStart) dirtyTap.current = false;
       setMessage(
-        persist
+        (persist
           ? "Saved tap_ms to persistent settings"
-          : "Updated tap_ms in memory"
+          : "Updated tap_ms in memory") +
+          (tapRevision.current !== revisionAtStart
+            ? ". Current tap draft was kept."
+            : "")
       );
     } catch (error) {
       if (isRetiredRequest(error)) return;
@@ -440,14 +534,16 @@ function RuntimeMacroSession() {
   const createMacro = async () => {
     const name = newMacroName.trim();
     if (!name) return;
+    const revisionAtStart = newNameRevision.current;
+    const selectionAtStart = loadSequence.current;
 
     const finishActivity = beginActivity();
     setMessage(null);
     try {
       await callRPC(Request.create({ createMacro: { name, persist: false } }));
-      setNewMacroName("");
+      if (newNameRevision.current === revisionAtStart) setNewMacroName("");
       setMessage(`Created "${name}"`);
-      selectName(name);
+      if (loadSequence.current === selectionAtStart) selectName(name);
       await refreshList();
     } catch (error) {
       if (isRetiredRequest(error)) return;
@@ -461,6 +557,7 @@ function RuntimeMacroSession() {
 
   const deleteMacro = async () => {
     if (!loadedMacro) return;
+    const selectionAtStart = loadSequence.current;
 
     const finishActivity = beginActivity();
     setMessage(null);
@@ -468,9 +565,14 @@ function RuntimeMacroSession() {
       await callRPC(
         Request.create({ deleteMacro: { name: loadedMacro.name } })
       );
-      setLoadedMacro(null);
-      selectName(null);
-      setJsonText("[]");
+      if (selectionAtStart === loadSequence.current) {
+        replaceLoadedMacro(null);
+        selectName(null);
+        ++draftRevision.current;
+        dirtyDraft.current = false;
+        dirtyJson.current = false;
+        setJsonText("[]");
+      }
       setMessage(`Deleted "${loadedMacro.name}"`);
       await refreshList();
     } catch (error) {
@@ -487,6 +589,8 @@ function RuntimeMacroSession() {
     if (!loadedMacro) return;
     const newName = renameTo.trim();
     if (!newName || newName === loadedMacro.name) return;
+    const selectionAtStart = loadSequence.current;
+    const revisionAtStart = renameRevision.current;
 
     const finishActivity = beginActivity();
     setMessage(null);
@@ -503,7 +607,17 @@ function RuntimeMacroSession() {
         })
       );
       setMessage(`Renamed to "${newName}"`);
-      selectName(newName);
+      if (
+        selectionAtStart === loadSequence.current &&
+        loadedMacroRef.current?.slot === loadedMacro.slot
+      ) {
+        replaceLoadedMacro({ ...loadedMacroRef.current, name: newName });
+        selectName(newName);
+        if (renameRevision.current === revisionAtStart) {
+          dirtyRename.current = false;
+          setRenameTo(newName);
+        }
+      }
       await refreshList();
     } catch (error) {
       if (isRetiredRequest(error)) return;
@@ -521,6 +635,8 @@ function RuntimeMacroSession() {
   // action explicitly requests durable deletion.
   const resetMacro = async () => {
     if (!loadedMacro) return;
+    const selectionAtStart = loadSequence.current;
+    const revisionAtStart = draftRevision.current;
     if (
       !window.confirm(
         `Reset "${loadedMacro.name}" to its compile-time default? ` +
@@ -539,9 +655,13 @@ function RuntimeMacroSession() {
         })
       );
       setMessage(response.status?.message ?? `Reset "${loadedMacro.name}"`);
-      setLoadedMacro(null);
-      selectName(null);
-      setJsonText("[]");
+      if (
+        selectionAtStart === loadSequence.current &&
+        draftRevision.current === revisionAtStart
+      ) {
+        dirtyDraft.current = false;
+        dirtyJson.current = false;
+      }
       await refreshList();
     } catch (error) {
       if (isRetiredRequest(error)) return;
@@ -597,7 +717,9 @@ function RuntimeMacroSession() {
           `Imported macro is ${encoded.length} bytes; limit is ${maxMacroBytes}`
         );
       }
-      setLoadedMacro({ ...loadedMacro, steps });
+      markEdited();
+      dirtyJson.current = false;
+      replaceLoadedMacro({ ...loadedMacro, steps });
       setMessage("Imported Keyboard Abyss macro steps");
     } catch (error) {
       if (isRetiredRequest(error)) return;
@@ -611,6 +733,19 @@ function RuntimeMacroSession() {
     ? editorEncoding(loadedMacro.steps, keyPressBehaviorId)
     : { size: 0, error: null };
   const encodedSize = encoding.size;
+
+  if (rpc.locked) {
+    return (
+      <main className="workspace">
+        <section className="panel">
+          <h2>Macros</h2>
+          <p className="message">
+            Studio is locked. Unlock the keyboard to edit macros.
+          </p>
+        </section>
+      </main>
+    );
+  }
 
   return (
     <main className="workspace">
@@ -660,7 +795,10 @@ function RuntimeMacroSession() {
             value={newMacroName}
             maxLength={maxNameLength}
             placeholder="New macro name"
-            onChange={(event) => setNewMacroName(event.target.value)}
+            onChange={(event) => {
+              ++newNameRevision.current;
+              setNewMacroName(event.target.value);
+            }}
           />
           <button
             className="btn"
@@ -683,9 +821,11 @@ function RuntimeMacroSession() {
                   min={0}
                   max={MAX_TAP_MS}
                   value={tapMs}
-                  onChange={(event) =>
-                    setTapMs(numericValue(event.target.value))
-                  }
+                  onChange={(event) => {
+                    ++tapRevision.current;
+                    dirtyTap.current = true;
+                    setTapMs(numericValue(event.target.value));
+                  }}
                 />
               </label>
               <button
@@ -710,7 +850,11 @@ function RuntimeMacroSession() {
                 <input
                   value={renameTo}
                   maxLength={maxNameLength}
-                  onChange={(event) => setRenameTo(event.target.value)}
+                  onChange={(event) => {
+                    ++renameRevision.current;
+                    dirtyRename.current = true;
+                    setRenameTo(event.target.value);
+                  }}
                 />
               </label>
               <button
@@ -800,7 +944,11 @@ function RuntimeMacroSession() {
               </div>
               <textarea
                 value={jsonText}
-                onChange={(event) => setJsonText(event.target.value)}
+                onChange={(event) => {
+                  markEdited();
+                  dirtyJson.current = true;
+                  setJsonText(event.target.value);
+                }}
                 spellCheck={false}
               />
             </div>

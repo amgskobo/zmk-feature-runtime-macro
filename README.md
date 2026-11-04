@@ -18,7 +18,8 @@ Each macro's body is a compact binary blob supporting:
 - behavior up
 - behavior tap using the global `tap_ms` setting
 - delay in milliseconds, at most 60000 per step (`ZMK_RUNTIME_MACRO_DELAY_MS_MAX`): playback waits in ZMK's shared behavior queue, which holds every other macro back meanwhile
-- packed `&kp` tap sequence using the global `tap_ms` setting
+- packed `&kp` tap sequence using the global `tap_ms` setting, at most 64 keys
+  per step; longer runs use multiple steps
 
 Every macro's name + body together share one RAM pool - see [Macro Size Limits](#macro-size-limits) below.
 
@@ -30,10 +31,15 @@ This fork requires Custom Settings with
 `zmk_custom_setting_keyspace_rename()`: renaming must preserve the macro's slot,
 body and storage identity. The production import and isolated tests both select
 `amgskobo/zmk-feature-custom-settings` at
-`b91a8ceb0a57a0cf41b34270752d79463e2848fa`. The older cormoran
+`c4071b095c3007d1deb055c609603ca9b5897d14`. The older cormoran
 `c6a7fef3a3be3d3ace5de9a4b0628c6418cd1f3f` does not provide that API.
 Do not substitute create/delete for rename, since that can move the slot used
 by an existing `&rmacro N` binding.
+
+The selected commit also provides `zmk_custom_setting_copy_public_key()` and
+local-notification authorization at encoding time. Both dependency manifests
+select that same published revision, including the key-copy and notification
+lifetime fixes required by this module.
 
 The selected Custom Settings commit is published in that fork. It includes
 same-slot rename, serialized registry mutations and notification-target lifetime
@@ -109,11 +115,14 @@ Open the Web UI from the ZMK Studio custom subsystem list, connect over serial, 
 3. Bind that macro's slot number (`&rmacro <slot>`) in your keymap.
 4. **Rename**, **Reset to Default**, or **Delete** a macro any time from the editor.
 
-The editor starts fresh when the RPC connection, subsystem index or discovered
-subsystem catalog changes. It retires pending editor requests, clears their
+The editor starts fresh when the RPC connection, subsystem index, discovered
+subsystem catalog or Studio authorization lifetime changes. It retires pending editor requests, clears their
 deadlines and stops sending subsequent steps from an old write. An RPC already
-sent may still take effect on the device. A body write uses separate resize and
-step requests; connection retirement, timeout or any other failure does not roll
+sent may still take effect on the device. A full body write clears the old steps
+in memory, then appends the new steps in order. Each intermediate body is a
+prefix of the intended result, so old steps and placeholders cannot consume
+the new body's action or byte budget. **Save** persists the completed body;
+**Write Memory** leaves it pending. Connection retirement, timeout or any other failure does not roll
 back requests already accepted. Reconnect and reread before retrying a failed
 write. This UI behavior does not make multi-request writes atomic or establish
 general concurrent registry publication during playback.
@@ -122,19 +131,37 @@ Within one session, the latest macro selection owns the displayed body. A slow
 older reply or refresh cannot replace that selection, and controls stay busy
 until every outstanding editor operation has finished. Invalid step edits show
 an error without closing the editor; body writes remain disabled until corrected.
+Rename and refresh preserve unsubmitted body and JSON drafts for the current
+macro. Edits made while an older write or read is pending also remain in the
+editor; completing that write saves its submitted version, not the newer draft.
+Names, the next creation name and the global tap setting also keep independent
+drafts, so a completed request or metadata refresh cannot clear newer input.
+An explicit macro selection or a new connection starts a different editor.
+Locking also clears the displayed body and drafts immediately; the editor opens
+a fresh session after unlocking. An old full-body write never resumes after a
+lock/unlock cycle. Requests already sent may still have affected the keyboard.
+Create opens the new macro only if no later macro selection was made while
+that request was pending; otherwise the current selection and draft remain.
 Delays must be whole milliseconds from 0 through 60000, and `tap_ms` must be a
 whole number from 0 through 10000. These bounds are checked before sending the
 corresponding write.
 
 Memory updates become pending custom setting changes; use **Save Pending** to persist all pending runtime macro changes, or **Discard Pending** to restore the saved values. Macros with such in-memory-only changes are marked with an "unsaved" dot in the list (the `ListMacros` response reports this per macro as `has_unsaved_changes`).
 
-**Unlocking:** browsing the macro list works without unlocking Studio - `ListMacros` (and `GetMacroGlobalSettings`) return only metadata (slot, name, size, unsaved flag, and global limits), never a macro's contents. Reading a specific macro's steps (`GetMacro`) or making any change (create/edit/rename/delete/reset/save/discard, `set_tap_ms`) requires an unlocked Studio session and is otherwise rejected with an "unlock required" error. The same holds for the generic custom settings RPC: the macro keyspace is registered with secure read and write permission, so it returns no macro body while Studio is locked.
+**Unlocking:** the firmware permits `ListMacros` and `GetMacroGlobalSettings` while locked; they return only metadata (slot, name, size, unsaved flag, and global limits), never a macro's contents. The browser editor retires its form on a lock notification and waits for unlock. Reading a specific macro's steps (`GetMacro`) or making any change (create/edit/rename/delete/reset/save/discard, `set_tap_ms`) requires an unlocked Studio session and is otherwise rejected with an "unlock required" error. The same holds for the generic custom settings RPC: the macro keyspace is registered with secure read and write permission. The selected registry must also enforce that permission when asynchronous body notifications are encoded.
 
 Create/Delete/Rename are macro-domain RPCs on this module's own subsystem (`CreateMacro`/`DeleteMacro`/`RenameMacro`), addressing a macro by its **name**. A client never needs to know that macros are stored as zmk-feature-custom-settings keyspace entries under the `macro/` prefix - the storage is an implementation detail, and no separate custom-settings RPC call is required. `RenameMacro` renames the entry in place in one write: the macro keeps its slot (so `&rmacro N` bindings keep working) and its body. Validation or allocation refusal leaves it unchanged. With `persist: true`, a storage error retains the new name in RAM as an unsaved change. A backend refusal before writing keeps the previous durable name, as the owner's controlled backend verifies; arbitrary physical storage errors provide no atomic durability guarantee. Save retries the rename and discard reloads the persisted name. No change event is raised for that failed write, so API clients must reread after a persistence error. The current Web editor renames in memory (`persist: false`) and then uses Save Pending for persistence. This uses `zmk_custom_setting_keyspace_rename()` from the custom settings fork.
 
 `ResetMacro` restores a macro to its compile-time state, addressing it by **slot number**. If a [devicetree default](#devicetree-default-macros) declares a macro of the same name, its body is overwritten with that default; `persist: false` keeps that body in memory and `persist: true` saves it. Without a matching default, a memory-only reset is refused without changing the macro. Set `persist: true` to delete it durably, or use the explicit Delete action. The Web editor uses memory-only Reset to Default and keeps a macro without a default unchanged.
 
 This module's own operational RPCs - `GetMacro`, `SetMacroStepCount`, `SetMacroStep`, and `AppendMacroStep` - address the macro to read or edit by its **slot number**, the same numeric value used for the keymap binding, not by name. Discover a macro's slot from the `ListMacros` response (the `CreateMacro` status message also names the slot it just assigned); an unbound or out-of-range slot is rejected with a clear error rather than silently doing nothing.
+
+Slot names are copied under the registry guard. A retained name exceeding the
+current limit or the caller's buffer is refused instead of truncated to another
+macro's name. GetMacro checks the complete stored wire structure before choosing
+its success response, so an invalid retained/generic-written body returns a
+valid RPC error and remains unchanged. Body encoding also rechecks unlock after
+a transport wait; already authorized bytes that were emitted cannot be recalled.
 
 The runtime macro RPC also exposes `MacroGlobalSettings`, containing `tap_ms` and `max_entries`. The get request returns the whole global settings message so future global settings can be added together; writes are per key, such as `set_tap_ms`. `max_entries` is read-only and reports the configured maximum number of macros that can exist at once (`CONFIG_ZMK_RUNTIME_MACRO_COUNT`).
 
