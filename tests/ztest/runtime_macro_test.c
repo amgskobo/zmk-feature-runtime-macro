@@ -65,6 +65,7 @@ struct test_settings_record {
 };
 
 static struct test_settings_record test_settings_storage[TEST_SETTINGS_STORAGE_CAPACITY];
+static bool test_settings_refuse_next_save;
 
 static struct test_settings_record *test_settings_find_record(const char *name) {
     for (size_t i = 0; i < ARRAY_SIZE(test_settings_storage); i++) {
@@ -106,6 +107,11 @@ static int test_settings_load(struct settings_store *cs, const struct settings_l
 static int test_settings_save(struct settings_store *cs, const char *name, const char *value,
                               size_t val_len) {
     ARG_UNUSED(cs);
+
+    if (value != NULL && test_settings_refuse_next_save) {
+        test_settings_refuse_next_save = false;
+        return -EIO;
+    }
 
     struct test_settings_record *record = test_settings_find_record(name);
     if (value == NULL) {
@@ -594,6 +600,84 @@ static int test_name_lifecycle(void) {
     return 0;
 }
 
+/* The actual registry is RAM-first on a persistent rename. A controlled
+ * pre-write backend refusal checks the module API's error and recovery path;
+ * it does not model power loss or arbitrary partially completed flash writes. */
+static int test_persist_rename_recovery(void) {
+    const uint8_t body[] = {ZMK_RUNTIME_MACRO_FORMAT_VERSION, ZMK_RUNTIME_MACRO_OP_DELAY, 7};
+    const char durable_key[] = ZMK_RUNTIME_MACRO_KEY_PREFIX "Rename Durable";
+    const char new_key[] = ZMK_RUNTIME_MACRO_KEY_PREFIX "Rename Working";
+    uint32_t slot;
+    int ret = zmk_runtime_macro_create("Rename Durable", body, sizeof(body),
+                                       ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST, &slot);
+    if (ret < 0) {
+        return ret;
+    }
+    const struct zmk_custom_setting *setting = find_macro_setting("Rename Durable");
+    struct test_settings_record *record = NULL;
+    for (size_t i = 0; i < ARRAY_SIZE(test_settings_storage); i++) {
+        struct test_settings_record *candidate = &test_settings_storage[i];
+        if (candidate->present && candidate->len == sizeof(durable_key) + sizeof(body) &&
+            memcmp(candidate->data, durable_key, sizeof(durable_key)) == 0) {
+            if (record) {
+                return -EINVAL;
+            }
+            record = candidate;
+        }
+    }
+    if (!setting || !record) {
+        return -ENODEV;
+    }
+    const uint32_t tap_ms = zmk_runtime_macro_tap_ms();
+    for (unsigned int attempt = 0; attempt < 2; attempt++) {
+        test_settings_refuse_next_save = true;
+        ret = zmk_runtime_macro_rename("Rename Durable", "Rename Working",
+                                       ZMK_CUSTOM_SETTING_WRITE_MODE_PERSIST);
+        char name[CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN + 1];
+        uint8_t read_back[sizeof(body)];
+        size_t read_size = 0;
+        uint32_t resolved = UINT32_MAX;
+        if (ret != -EIO || test_settings_refuse_next_save ||
+            zmk_runtime_macro_name_for_slot(slot, name, sizeof(name)) != 0 ||
+            strcmp(name, "Rename Working") != 0 ||
+            zmk_runtime_macro_slot_for_name("Rename Working", &resolved) != 0 || resolved != slot ||
+            zmk_runtime_macro_slot_for_name("Rename Durable", NULL) != -ENOENT ||
+            !zmk_custom_setting_has_unsaved_value(setting) ||
+            zmk_runtime_macro_read("Rename Working", read_back, sizeof(read_back), &read_size) !=
+                0 ||
+            read_size != sizeof(body) || memcmp(read_back, body, sizeof(body)) != 0 ||
+            !record->present || record->len != sizeof(durable_key) + sizeof(body) ||
+            memcmp(record->data, durable_key, sizeof(durable_key)) != 0 ||
+            memcmp(record->data + sizeof(durable_key), body, sizeof(body)) != 0 ||
+            zmk_runtime_macro_tap_ms() != tap_ms) {
+            LOG_ERR("Persistent rename refusal lost RAM/durable identity: ret=%d attempt=%u", ret,
+                    attempt);
+            return -EINVAL;
+        }
+        ret = attempt == 0 ? zmk_custom_setting_discard(setting) : zmk_custom_setting_save(setting);
+        const char *expected_name = attempt == 0 ? "Rename Durable" : "Rename Working";
+        const char *expected_key = attempt == 0 ? durable_key : new_key;
+        size_t expected_key_size = strlen(expected_key) + 1;
+        if (ret != 0 || zmk_custom_setting_has_unsaved_value(setting) ||
+            zmk_runtime_macro_name_for_slot(slot, name, sizeof(name)) != 0 ||
+            strcmp(name, expected_name) != 0 ||
+            zmk_runtime_macro_read(expected_name, read_back, sizeof(read_back), &read_size) != 0 ||
+            read_size != sizeof(body) || memcmp(read_back, body, sizeof(body)) != 0 ||
+            !record->present || record->len != expected_key_size + sizeof(body) ||
+            memcmp(record->data, expected_key, expected_key_size) != 0 ||
+            memcmp(record->data + expected_key_size, body, sizeof(body)) != 0) {
+            LOG_ERR("Persistent rename recovery failed: ret=%d attempt=%u", ret, attempt);
+            return -EINVAL;
+        }
+    }
+    ret = zmk_runtime_macro_delete("Rename Working");
+    if (ret < 0) {
+        return ret;
+    }
+    LOG_INF("PASS: runtime_macro_persist_rename_recovery");
+    return 0;
+}
+
 /*
  * Fills the shared name+body pool with MAX_BYTES bodies (creating fresh
  * names, since macros are addressed by name now - not fixed slot indices)
@@ -996,6 +1080,11 @@ static int runtime_macro_test_init(void) {
     }
 
     ret = test_name_lifecycle();
+    if (ret < 0) {
+        return ret;
+    }
+
+    ret = test_persist_rename_recovery();
     if (ret < 0) {
         return ret;
     }

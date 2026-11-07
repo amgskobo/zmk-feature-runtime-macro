@@ -94,8 +94,11 @@ int zmk_runtime_macro_read(const char *name, uint8_t *encoded, size_t encoded_ca
  * bindings to it keep working), storage record and body. Returns -ENOENT if
  * `old_name` has no live macro, -EEXIST if `new_name` is already taken
  * (including `new_name` == `old_name`), -ENAMETOOLONG / -EINVAL for a too
- * long or empty `new_name`, -ENOSPC if the pool cannot hold a longer name;
- * on failure the macro is unchanged. */
+ * long or empty `new_name`, -ENOSPC if the pool cannot hold a longer name.
+ * Validation/allocation refusals leave the macro unchanged. A PERSIST
+ * storage error can retain the new RAM name as unsaved without a change
+ * event; reread after an error, then save to retry or discard to reload the
+ * durable name. Physical storage failures have no atomic rollback guarantee. */
 int zmk_runtime_macro_rename(const char *old_name, const char *new_name,
                              enum zmk_custom_setting_write_mode mode);
 

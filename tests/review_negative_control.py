@@ -22,6 +22,8 @@ def main() -> None:
             "encode-lock",
             "web-lock",
             "timer-cleanup",
+            "rename-persist-mode",
+            "native-sanitizer-admission",
         ),
     )
     args = parser.parse_args()
@@ -29,14 +31,20 @@ def main() -> None:
     owner = Path(__file__).resolve().parents[1]
     if root.is_relative_to(owner) or not (root / "src/runtime_macro.c").is_file():
         raise SystemExit("negative control requires an isolated owner source copy")
-    if args.fault in ("borrowed-name", "truncate-name"):
+    if args.fault in ("borrowed-name", "truncate-name", "rename-persist-mode"):
         target = root / "src/runtime_macro.c"
     elif args.fault in ("web-lock", "timer-cleanup"):
         target = root / "web/src/useSessionRpc.ts"
+    elif args.fault == "native-sanitizer-admission":
+        target = root / "tests/native_verifier.py"
     else:
         target = root / "src/studio/runtime_macro_handler.c"
     source = target.read_text()
-    if args.fault == "borrowed-name":
+    if args.fault == "native-sanitizer-admission":
+        start = source.index('            if re.search(\n                r"^(?:==')
+        end = source.index('            if re.search(r"\\bFAIL:", raw):', start)
+        source = source[:start] + source[end:]
+    elif args.fault == "borrowed-name":
         start = source.index(
             "    char public_key[RUNTIME_MACRO_MAX_KEY_LEN];",
             source.index("int zmk_runtime_macro_name_for_slot("),
@@ -59,6 +67,13 @@ def main() -> None:
             source[:start]
             + '    snprintf(name, name_capacity, "%s", resolved);\n'
             + source[end:]
+        )
+    elif args.fault == "rename-persist-mode":
+        source = replace_once(
+            source,
+            "return zmk_custom_setting_keyspace_rename(&runtime_macros, old_key, new_key, mode);",
+            "(void)mode;\n    return zmk_custom_setting_keyspace_rename(\n"
+            "        &runtime_macros, old_key, new_key, ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY);",
         )
     elif args.fault == "get-admission":
         source = replace_once(

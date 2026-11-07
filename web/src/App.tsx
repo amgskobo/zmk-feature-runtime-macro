@@ -218,7 +218,27 @@ function RuntimeMacroSession({
         signal
       );
       const response = Response.decode(payload);
-      if (response.error) throw new Error(response.error.message);
+      if (response.error) {
+        throw new Error(
+          response.error.message.trim() || "Runtime Macro RPC request failed"
+        );
+      }
+      const expected = request.listMacros
+        ? response.listMacros
+        : request.getMacro
+          ? response.getMacro
+          : request.getMacroGlobalSettings
+            ? response.getMacroGlobalSettings?.settings
+            : response.status;
+      const successes = [
+        response.status,
+        response.listMacros,
+        response.getMacro,
+        response.getMacroGlobalSettings,
+      ].filter((value) => value !== undefined);
+      if (!expected || successes.length !== 1) {
+        throw new Error("Unexpected Runtime Macro RPC response");
+      }
       return response;
     },
     [callPayload]

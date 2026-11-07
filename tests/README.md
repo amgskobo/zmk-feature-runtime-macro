@@ -31,12 +31,35 @@ the owner configuration. No dependencies are installed implicitly by the tests.
 
 The native verifier runs each built binary three times in independent empty
 initial-flash directories, retaining raw output before filtering. It checks real
-process exits, fatal assertions and every linked checked-init result before
+process exits, sanitizer diagnostics, fatal assertions and every linked checked-init result before
 comparing unchanged owner snapshots. A SYS_INIT error cannot be hidden by a
 later matching key trace. Native scheduling and controlled APIs still do not
 establish physical transport/retention. Test-only core/tool dependencies are
 pinned; update pins only after reviewing the new sources and rerunning this
 owner matrix. No network updates are implicit in the owner test command.
+
+`tests/test_native_verifier.py` compiles recovering ASan and UBSan controls.
+Each control must really diagnose its fault, return zero, complete its checked
+init and emit the unchanged key trace before the verifier rejects it. ASan
+reports on stdout and UBSan on stderr; the verifier retains their combined raw
+output. Sanitizer names and configuration text without diagnostic syntax remain
+valid. All earlier exit, role/configuration, hook, fixture, snapshot, fresh-state
+and unchanged-binary assertions remain required. For retained control inputs,
+set `NATIVE_VERIFIER_CONTROL_OUTPUT` to a fresh output parent outside the source.
+The `native-sanitizer-admission` isolated fault removes only that diagnostic
+check; exactly the two recovering-sanitizer rejection assertions must fail while
+the other verifier controls complete. Replay each retained control binary in
+three fresh directories against the fixed verifier without recompilation.
+
+Combined native ASan/UBSan runs can diagnose the selected DYA core's
+`kscan_mock.c:103` signed shift even when recovery lets initialization and the
+snapshot finish. Such a run is rejected, never a clean native PASS. Keep core,
+dependency and owner diagnostics separately classified with the captured source
+location and hash. Strict compiler flags and runtime halt options are separate
+properties; inspect the native simulator's Make-built sources as well as CMake's
+compilation database. The standalone queue and pressure launchers select normal
+builds, while the handler, timeout and review sanitizer entries compile with
+`-fno-sanitize-recover=all`; those entries do not declare a recovering profile.
 
 The production and isolated-test manifests select Custom Settings
 `c4071b095c3007d1deb055c609603ca9b5897d14`. That dependency provides
@@ -221,6 +244,17 @@ count; account for compiler jobs and concurrent owners in the global budget.
 invalid budgets before launching west. The canonical owner entry includes
 these controls without dropping any native or board scenario.
 
+An optional sanitizer build of the full DYA native app also executes core code
+outside this owner's control. The selected mock scanner uses a signed
+`1 << 31` expression in `app/module/drivers/kscan/kscan_mock.c`; UBSan can stop
+there before a required fixture completes. Preserve that failure and report
+the combined native lane as BLOCKED by the dependency. Keep assertions and
+required features enabled. An ASan-only native run, optimized native run and
+the independent real-kernel queue/handler/timeout sanitizer checks have separate
+identities and cannot turn that blocked lane into PASS. Native mock builds use
+their selected 64-bit ABI; ARM board compilation and the explicitly declared
+host `-m32` timeout checks remain separate.
+
 Native result admission requires every `native_sim.keymap` fixture to have a
 matching binary. `required_hooks.json` names the expected checked initialization
 hooks and required feature/role configuration. Fixture-bound declarations also
@@ -276,6 +310,18 @@ binding and packed-sequence lengths, while retaining valid full uint32 decoding
 and the firmware-compatible overlong-zero form. Editor delay limits remain a
 separate rule from the raw binary codec's uint32 range.
 
+Settled replies are checked against the operation's success envelope before
+the editor consumes them. The same lifecycle fixture covers empty and unknown
+protobuf replies, wrong-operation replies, an ambiguous success envelope and
+missing global settings. A rejected list keeps its catalog and body draft;
+missing settings keep the previous global tap/pool metadata. Rename cannot
+optimistically change the selection, confirm success or issue refreshes after
+an invalid reply. Empty and whitespace-only server errors stay visible.
+These ten regressions fail their DOM/state assertions against the original
+editor. A valid empty catalog, empty status and successful recovery remain positive controls,
+along with all earlier lifecycle cases. Already dispatched requests retain the
+existing non-atomic device-side limit.
+
 The regressions fail against the original editor/decoder before the fixes;
 valid decoder inputs, timeout reporting, StrictMode and unrelated updates are
 positive controls. These are controlled DOM/transport checks. They do not
@@ -304,3 +350,29 @@ actual DYA behavior queue, emits a required completion marker and is repeated
 three times by the native verifier. `tests/review` retains 32/33/64-tap producer
 controls, packed/nonpacked default waits and 31/32/33-byte real nanopb name bounds.
 The canonical owner entry dispatches these alongside all existing assertions.
+
+## Persistent rename integration and coverage boundaries
+
+`test_persist_rename_recovery()` in the existing checked registry fixture uses
+the selected Custom Settings implementation and controlled settings backend.
+A pre-write `-EIO` must reach the macro caller while the new RAM name remains
+dirty at the same slot with exact body bytes. The previous durable blob stays
+exact for this backend refusal. Discard reloads the old name; a second refusal
+followed by Save persists the new name. The independent global tap value stays
+unchanged. This adds coverage of existing behavior, not a production rename fix
+or a physical durability claim. Registry event semantics remain the dependency
+owner's responsibility.
+
+The `rename-persist-mode` negative control changes only the delegated mode to
+MEMORY in an isolated source copy. The checked fixture must fail with
+`Persistent rename refusal lost RAM/durable identity: ret=0 attempt=0` and a
+nonzero `runtime_macro_test_init` completion in three runs of one binary.
+A build failure or unrelated assertion does not qualify.
+
+| Implementation family | Existing owner fixtures and limits |
+| --- | --- |
+| Name/slot/pool and persistence | `tests/ztest/runtime_macro_test.c`: normal lifecycle, duplicate/invalid/range/capacity refusal, copied names, slot reuse, independent tap scalar, exact body round trips, Save/Discard and rename refusal/recovery. Controlled storage does not establish physical NVS retention or concurrent lifecycle publication. |
+| Ordered playback and held releases | `tests/playback`, `tests/queue-pressure`, `tests/review` and `tests/queue-kernel`: 32/33/64 taps, explicit holds, queue pressure, deletion after decode, pre-existing waits, exact ordered edges and released HID state. There is no public abort API or arbitrary behavior-resource cleanup guarantee. |
+| Protocol and access gates | `tests/studio` and `tests/rpc-handler`: real nanopb, 64-key packing, malformed stored bodies, locked admission, callback-start unlock check, partial edits/reset, 2048-byte body/frame guard and name/slot wire limits. Mid-stream transport cancellation remains unverified. |
+| Time arithmetic and ABI | `tests/test_timeout_width.py`: independent full-width ceiling oracle, 14 rates, both tick forms, optimized/sanitizer/coverage/host-m32 and named numerical/object-width controls. This private arithmetic helper is not used by the current completion-marker player; these results do not measure playback latency. |
+| Web request/draft ownership | `tests/web/sessionLifecycle.spec.tsx` and codec fixtures: connection/catalog/lock retirement, timeout/unmount, late replies, independent selection/body/JSON/name/tap drafts, validated full-prefix writes and failure recovery. Controlled DOM/RPC results do not establish browser/device delivery or rollback of dispatched requests. |

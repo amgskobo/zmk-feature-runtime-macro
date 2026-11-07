@@ -4,6 +4,7 @@ PASS: runtime_macro_max_bytes_boundary_rejected
 PASS: runtime_macro_delay_bound max=60000
 PASS: runtime_macro_all_digit_name_ok
 PASS: runtime_macro_name_lifecycle
+PASS: runtime_macro_persist_rename_recovery
 PASS: runtime_macro_pool_exhausted
 PASS: runtime_macro_pool_freed_slot_retry_succeeded
 PASS: runtime_macro_pool_discard_restores_persisted_body size=256

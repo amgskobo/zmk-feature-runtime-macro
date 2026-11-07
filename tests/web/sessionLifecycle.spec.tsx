@@ -34,6 +34,13 @@ function reply(value: Parameters<typeof Response.create>[0]) {
 function status() {
   return reply({ status: { affectedCount: 1, message: "OK" } });
 }
+function unknownReply() {
+  return {
+    custom: {
+      call: { payload: Uint8Array.from([0x98, 0x06, 0x01]) },
+    },
+  };
+}
 function globalSettings() {
   return reply({
     getMacroGlobalSettings: {
@@ -160,6 +167,168 @@ describe("Runtime Macro session and editor ownership", () => {
   });
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it.each(["empty", "unknown", "wrong-operation"])(
+    "keeps the catalog and draft after a settled %s catalog response",
+    async (kind) => {
+      render(panel(app()));
+      await loaded();
+      fireEvent.change(screen.getAllByLabelText("Delay ms")[0], {
+        target: { value: "9" },
+      });
+      const invalid =
+        kind === "empty"
+          ? reply({})
+          : kind === "unknown"
+            ? unknownReply()
+            : status();
+      intercept = (request) =>
+        request.listMacros ? Promise.resolve(invalid) : undefined;
+      const mark = requests().length;
+      fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+      await flush();
+      expect(macroButton("Alpha")).toHaveClass("selected");
+      expect(macroButton("Beta")).toBeInTheDocument();
+      expect(macroButton("Gamma")).toBeInTheDocument();
+      expect(screen.getAllByLabelText("Delay ms")[0]).toHaveValue(9);
+      expect(requests().slice(mark)).toHaveLength(1);
+      expect(
+        screen.getByText("Unexpected Runtime Macro RPC response"),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled();
+      intercept = undefined;
+      fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+      await flush();
+      expect(macroButton("Alpha")).toHaveClass("selected");
+      expect(screen.getAllByLabelText("Delay ms")[0]).toHaveValue(9);
+    },
+  );
+
+  it("keeps global metadata when its response omits the required settings", async () => {
+    intercept = (request) =>
+      request.getMacroGlobalSettings
+        ? Promise.resolve(
+            reply({
+              getMacroGlobalSettings: {
+                settings: {
+                  tapMs: 73,
+                  maxEntries: 8,
+                  keyPressBehaviorId: 1,
+                  poolBytesTotal: 640,
+                  poolBytesUsed: 11,
+                },
+              },
+            }),
+          )
+        : undefined;
+    render(panel(app()));
+    await loaded();
+    expect(screen.getByLabelText("Tap ms")).toHaveValue(73);
+    expect(screen.getByText(/11\/640 B used/)).toBeInTheDocument();
+    intercept = (request) =>
+      request.getMacroGlobalSettings
+        ? Promise.resolve(reply({ getMacroGlobalSettings: {} }))
+        : undefined;
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await flush();
+    expect(screen.getByLabelText("Tap ms")).toHaveValue(73);
+    expect(screen.getByText(/11\/640 B used/)).toBeInTheDocument();
+    expect(macroButton("Alpha")).toHaveClass("selected");
+    expect(
+      screen.getByText("Unexpected Runtime Macro RPC response"),
+    ).toBeInTheDocument();
+  });
+
+  it.each(["empty", "unknown", "wrong-operation", "ambiguous"])(
+    "does not accept a %s response as rename success",
+    async (kind) => {
+      render(panel(app()));
+      await loaded();
+      fireEvent.click(macroButton("Beta"));
+      await flush();
+      fireEvent.change(screen.getByLabelText("Name (slot 1)"), {
+        target: { value: "Renamed" },
+      });
+      const invalid =
+        kind === "empty"
+          ? reply({})
+          : kind === "unknown"
+            ? unknownReply()
+            : kind === "wrong-operation"
+              ? globalSettings()
+              : reply({
+                  status: { affectedCount: 1, message: "OK" },
+                  listMacros: { macros: [] },
+                });
+      intercept = (request) =>
+        request.renameMacro ? Promise.resolve(invalid) : undefined;
+      const mark = requests().length;
+      fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+      await flush();
+      expect(macroButton("Beta")).toHaveClass("selected");
+      expect(screen.getByLabelText("Name (slot 1)")).toHaveValue("Renamed");
+      expect(requests().slice(mark)).toHaveLength(1);
+      expect(
+        screen.queryByText('Renamed to "Renamed"'),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByText("Unexpected Runtime Macro RPC response"),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Rename" })).toBeEnabled();
+      intercept = undefined;
+      fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+      await flush();
+      expect(macroButton("Renamed")).toHaveClass("selected");
+    },
+  );
+
+  it.each(["", "   "])(
+    "shows a nonempty failure for an RPC error message %j",
+    async (message) => {
+      render(panel(app()));
+      await loaded();
+      intercept = (request) =>
+        request.setTapMs
+          ? Promise.resolve(reply({ error: { message } }))
+          : undefined;
+      fireEvent.click(
+        screen.getAllByRole("button", { name: "Write Memory" })[0],
+      );
+      await flush();
+      expect(
+        screen.getByText("Runtime Macro RPC request failed"),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled();
+      intercept = undefined;
+      fireEvent.click(
+        screen.getAllByRole("button", { name: "Write Memory" })[0],
+      );
+      await flush();
+      expect(screen.getByText("Updated tap_ms in memory")).toBeInTheDocument();
+    },
+  );
+
+  it("accepts a valid empty catalog and creates its first macro", async () => {
+    macros = [];
+    render(panel(app()));
+    await loaded();
+    expect(
+      screen.queryByText("Unexpected Runtime Macro RPC response"),
+    ).not.toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText("New macro name"), {
+      target: { value: "Fresh" },
+    });
+    intercept = (request) => {
+      if (!request.createMacro) return undefined;
+      macros.push({ slot: 0, name: request.createMacro.name, steps: [] });
+      // A present status submessage is valid even with no fields set.
+      return Promise.resolve(reply({ status: {} }));
+    };
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await flush();
+    expect(macroButton("Fresh")).toHaveClass("selected");
+    expect(screen.getByLabelText("Name (slot 0)")).toHaveValue("Fresh");
   });
 
   it("retires a delayed body read and clears protected editor state on lock", async () => {

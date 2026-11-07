@@ -4,7 +4,7 @@
 
 Runtime Macro is a ZMK module that lets you create and edit small macros at runtime through the unofficial custom ZMK Studio RPC protocol.
 
-Macros are **created, renamed, and deleted by name** (e.g. `"hello"`, stored as the [zmk-feature-custom-settings](https://github.com/cormoran/zmk-feature-custom-settings) keyspace entry `macro/hello` under subsystem `cormoran__runtime_macro`). Once created, a macro's steps are read and edited by **slot number**, not name - see the note on the operational RPCs below. A keymap binding also only takes a **number**:
+Macros are **created, renamed, and deleted by name** (e.g. `"hello"`, stored as the [zmk-feature-custom-settings](https://github.com/amgskobo/zmk-feature-custom-settings) keyspace entry `macro/hello` under subsystem `cormoran__runtime_macro`). Once created, a macro's steps are read and edited by **slot number**, not name - see the note on the operational RPCs below. A keymap binding also only takes a **number**:
 
 ```dts
 &rmacro 0
@@ -38,14 +38,14 @@ by an existing `&rmacro N` binding.
 
 The selected commit also provides `zmk_custom_setting_copy_public_key()` and
 local-notification authorization at encoding time. Both dependency manifests
-select that same published revision, including the key-copy and notification
+select that same revision, including the key-copy and notification
 lifetime fixes required by this module.
 
-The selected Custom Settings commit is published in that fork. It includes
-same-slot rename, serialized registry mutations and notification-target lifetime
-handling. Use the Runtime Macro branch below with the tested DYA revision;
-the isolated manifest pins that same core. Local development may instead select
-these exact revisions as explicit module overrides in the build workflow.
+Prepare the exact Custom Settings commit from the declared fork URL and verify
+its full identity. An existing local checkout or cache does not establish fresh
+remote availability. Use the Runtime Macro branch below with the tested DYA
+revision; the isolated manifest pins that same core. Local development may
+select these exact revisions as explicit module overrides in the build workflow.
 
 ```yml
 manifest:
@@ -160,8 +160,9 @@ Slot names are copied under the registry guard. A retained name exceeding the
 current limit or the caller's buffer is refused instead of truncated to another
 macro's name. GetMacro checks the complete stored wire structure before choosing
 its success response, so an invalid retained/generic-written body returns a
-valid RPC error and remains unchanged. Body encoding also rechecks unlock after
-a transport wait; already authorized bytes that were emitted cannot be recalled.
+valid RPC error and remains unchanged. Body encoding also checks unlock when
+the steps callback begins; bytes already emitted cannot be recalled, and this
+does not establish cancellation at every subsequent transport wait.
 
 The runtime macro RPC also exposes `MacroGlobalSettings`, containing `tap_ms` and `max_entries`. The get request returns the whole global settings message so future global settings can be added together; writes are per key, such as `set_tap_ms`. `max_entries` is read-only and reports the configured maximum number of macros that can exist at once (`CONFIG_ZMK_RUNTIME_MACRO_COUNT`).
 
@@ -257,7 +258,7 @@ If the pool is full, creating or updating a macro fails and the Web UI shows **"
 
 ## Upgrading from a pre-keyspace release
 
-This module's macro storage uses the keyspace feature of [zmk-feature-custom-settings](https://github.com/cormoran/zmk-feature-custom-settings), with the shared pool and limits described above. Upgrading from the former numeric-slot storage is a **breaking storage-schema and RPC change**:
+This module's macro storage uses the keyspace feature of [zmk-feature-custom-settings](https://github.com/amgskobo/zmk-feature-custom-settings), with the shared pool and limits described above. Upgrading from the former numeric-slot storage is a **breaking storage-schema and RPC change**:
 
 - Previously-recorded macros (stored per numeric slot as `names.<i>` / `macros.<i>`) are **not migrated** and are silently dropped on upgrade - recreate your macros after flashing.
 - Macros are now created/deleted/renamed by **name**, not by a fixed slot index; a keymap binding's numeric parameter is now an assigned slot you look up after creating a macro, not a slot you write directly into.
@@ -268,8 +269,8 @@ This module's macro storage uses the keyspace feature of [zmk-feature-custom-set
 Playback decodes the body once, then retains its next action while the shared
 ZMK behavior queue is full. It retries from delayed work without replaying
 accepted presses or losing their releases. A new playback stays busy until
-submission and the existing completion delay finish. Deleting the stored macro
-does not discard actions already decoded for a playback. This adds no idle
+the completion marker executes at the end of the shared queue. Deleting the
+stored macro does not discard actions already decoded for a playback. This adds no idle
 timer or heap allocation. It does not bound queue/transport latency or add an
 abort API. See [the real-kernel pressure check](tests/queue-pressure/README.md)
 and run `bash tests/queue-pressure/run.sh /absolute/resolved/west/workspace`.

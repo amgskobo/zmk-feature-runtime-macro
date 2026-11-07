@@ -10,6 +10,7 @@ npm ci
 npm run generate
 npm test
 npm run build
+npm run lint
 ```
 
 The protobuf schema is defined in `../proto/cormoran/runtime_macro/runtime_macro.proto`.
@@ -18,20 +19,28 @@ The UI edits macro names and compact encoded macro bodies. It can import/export 
 
 ## Console privacy
 
-The local Vite plugin replaces the two locked Studio SDKs' exception log
-arguments with fixed error categories. Messages, stacks, causes, device/profile
-names and arbitrary error names are not SDK console arguments. New SDK console
-sites stop the build for privacy review. Excluding the SDKs from development
-prebundling applies the same transform in development and production. Transport,
-exception propagation and visible UI messages are preserved. Browser/framework
-diagnostics and unrelated browser extensions remain separate domains.
+`src/installConsolePrivacy.ts` installs the runtime console guard before the
+application starts, in development and production. It wraps debug, log, info,
+warn and error. A first string argument is preserved as a fixed label; later
+strings are redacted and errors become fixed categories. Plain-object keys stay
+visible while their values are processed by the same bounded redaction rule.
+`../tests/web/sdkConsole.spec.ts` parses the two locked SDKs' shipped JavaScript
+and requires the five reviewed console sites with literal first labels. A new
+or changed site fails that test for review. Transport, exception propagation and
+visible UI messages remain unchanged. These checks do not establish privacy for
+arbitrary first labels, browser/framework diagnostics or unrelated extensions.
 
 ## Dependency security
 
 `package.json` overrides the Studio client's transitive `protobufjs` dependency
 to `7.6.5`, including the patched UTF-8 helper. Use `npm ci` with this lockfile.
-After changing dependencies, run `npm audit --omit=dev`, the Web tests and the
-production build.
+After changing dependencies, run both `npm audit` and `npm audit --omit=dev`,
+retain their separate outputs, and run the Web tests, production build and lint.
+The production-only audit omits development tools. Compatible transitive updates
+keep the declared direct tools, Studio SDK/hook commits and protobuf override
+unchanged; they do not clear the remaining full-audit findings in the selected
+Jest and TypeScript ESLint dependency chains. Review any tool or incompatible
+dependency update separately instead of using `npm audit fix --force`.
 
 ## Editor request lifetime
 
@@ -41,6 +50,15 @@ its remaining step writes. The latest selection owns the displayed body, and
 finishing another read does not enable writes while an earlier write is pending.
 Every request has a five-second deadline that is cleared on completion,
 replacement or unmount.
+
+Replies must contain exactly the success message for the requested operation;
+the global-settings reply also needs its settings submessage. Empty, unknown,
+wrong-operation and ambiguous success envelopes are errors. A rejected catalog
+reply preserves the current list and draft, and rejected global settings retain
+the previous global metadata. Mutations require a status reply before the
+editor confirms success or refreshes. Empty or whitespace-only server errors
+have a visible fallback message. An invalid reply cannot undo a request already
+accepted by the keyboard; reread before retrying after a protocol failure.
 
 Core lock notifications retire pending calls synchronously and clear the editor
 body and drafts. Unlock starts a different request lifetime and reloads a fresh

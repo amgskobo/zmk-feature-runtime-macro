@@ -17,21 +17,24 @@
     "outputs": "Use a fresh evidence directory; existing evidence is never overwritten."
   },
   "gaps": [
-    "Physical USB/BLE/split delivery, timing, power and retention require matching production-board evidence."
+    "Physical USB/BLE/split delivery, timing, power and retention require matching production-board evidence.",
+    "Full DYA native ASan/UBSan can be blocked before fixture completion by the selected core mock scanner's signed 1 << 31; preserve that failure and keep ASan-only, optimized and independent kernel/handler/timeout results separate.",
+    "Body authorization is checked at steps-callback entry, not at every later transport wait. General concurrent registry lifecycle publication and arbitrary behavior-resource cancellation are not established."
   ],
-  "native_verification": "tests/native_verifier.py: actual exit, registered test completion, raw ordered logs, unchanged snapshots, identical binary repeated three times.",
+  "native_verification": "tests/native_verifier.py: actual exit, diagnostic-syntax sanitizer rejection even with recovering process0/init0/matching trace, registered test completion, raw ordered logs, unchanged snapshots, identical binary repeated three times. Real compiled ASan stdout/UBSan stderr controls and a benign sanitizer-name/configuration positive preserve all earlier role/config/hook/fixture assertions; native-sanitizer-admission removes only the diagnostic rejection in an isolated copy.",
   "custom_settings_dependency": {
     "url": "https://github.com/amgskobo/zmk-feature-custom-settings",
     "revision": "c4071b095c3007d1deb055c609603ca9b5897d14",
     "required_contract": "Same-slot keyspace rename, payload/storage identity and existing memory/persist lifecycle; both production import and isolated tests select this exact dependency. The selected registry also serializes mutations and retains notification targets through dispatch.",
     "regression": "Previous cormoran c6a7fef dependency lacks rename and fails enabled ARM/native links. Existing lifecycle fixtures retain same-slot rename assertions.",
-    "publication": "The selected exact commit is published at the declared fork URL; prepare and verify that revision explicitly in the isolated container workspace.",
+    "publication": "Prepare and verify the exact commit at the declared fork URL explicitly; an existing local checkout or cache is not fresh remote-availability evidence.",
     "selected_prerequisite": "The selected c4071b095c3007d1deb055c609603ca9b5897d14 commit includes copy_public_key and encode-time local notification authorization. Production and isolated-test manifests pin that same implementation; a different working override remains a separate source snapshot requiring explicit identity and review."
   },
   "timeout_width": {
     "entry": "python3 -m unittest discover -s tests -p test_timeout_width.py -v",
     "contract": "Full uint32 milliseconds, exact ceiling and configured kernel tick ABI; independent wide oracle and identified math/width controls",
-    "physical": "NOT RUN"
+    "physical": "NOT RUN",
+    "production_use": "The current completion-marker player does not call this private arithmetic helper; numerical/object-width checks do not establish playback timing."
   },
   "web_session": {
     "fixtures": [
@@ -62,5 +65,23 @@
     "repeats": "Default executions remain one per executable variant. Fault checks retain the first binary after failure, verify its hash, then execute that same binary in two additional fresh initial-state directories with the recorded environment; three intended C assertion failures required per executable variant.",
     "limits": "Artifact/focused controls do not replace complete owner/native/Web checks or establish physical transport. Existing evidence paths are refused."
   },
-  "web_timer_ownership": "Frozen lifetime resource with private mutable state; synchronous lock retirement, batched lock/unlock and StrictMode remain covered. Jest runAllTicks drains only fake microtasks before unchanged zero assertions; a real unresolved5s RPC must remain counted1 with no clock advance before retirement. timer-cleanup fault must fail zero-timer assertions."
+  "web_timer_ownership": "Frozen lifetime resource with private mutable state; synchronous lock retirement, batched lock/unlock and StrictMode remain covered. Jest runAllTicks drains only fake microtasks before unchanged zero assertions; a real unresolved5s RPC must remain counted1 with no clock advance before retirement. timer-cleanup fault must fail zero-timer assertions.",
+  "persist_rename_integration": {
+    "fixture": "tests/ztest/runtime_macro_test.c: test_persist_rename_recovery",
+    "contract": "Existing RAM-first PERSIST rename forwards pre-write -EIO; same slot/exact body/new dirty RAM name and previous durable blob remain distinct. Discard restores the durable name; Save retries a second failed rename. Global tap remains independent.",
+    "negative_control": "rename-persist-mode changes only delegated mode to MEMORY; the unchanged fixture must report ret=0 attempt=0 and nonzero checked-init completion three times on one binary.",
+    "limits": "Coverage of unchanged production behavior through the actual selected registry and controlled backend, not a new production bug, concurrent lifecycle or physical rollback guarantee."
+  },
+  "web_response_admission": {
+    "fixture": "tests/web/sessionLifecycle.spec.tsx",
+    "contract": "Exactly one success envelope matching the requested operation, required global-settings submessage and visible fallback for blank server errors. Rejected list/global replies preserve their previous metadata and drafts; invalid mutation replies cannot confirm success, optimistically rename or dispatch refreshes.",
+    "regression": "Original editor fails ten new DOM/state assertions on settled empty/unknown/wrong/ambiguous replies, missing global settings and blank errors. All earlier72 cases plus valid empty catalog/status remain positive controls; each invalid read/mutation can recover through a subsequent valid reply.",
+    "limits": "Controlled generated protobuf/DOM/RPC boundary. Response admission does not roll back a request already accepted by the keyboard or establish browser/device delivery."
+  },
+  "web_dependency_review": {
+    "commands": "Online preparation: npm audit and npm audit --omit=dev separately; scripts-enabled npm ci with a fresh private cache and workflow Node version. Offline: bash tests/run-web.sh, npm --prefix web run build and npm --prefix web run lint.",
+    "contract": "Compatible development transitive lock updates preserve root/direct/tool/Git SDK/hook/protobuf selections and the production graph. Validate every changed incoming/new outgoing semver edge and retain actual installed SDK runtime, type, source and license identities.",
+    "privacy_control": "The existing runtime console guard and shipped-SDK AST allowlist remain independent. A dormant synthetic console site in an isolated installed SDK copy must fail exactly the reviewed-site assertion, with the unchanged SDK as its positive control.",
+    "limits": "Production-only audit success does not clear residual full-audit development findings. Controlled DOM/build checks do not establish hosted CI, browser or device acceptance."
+  }
 }

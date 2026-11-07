@@ -134,6 +134,15 @@ def verify_native(output: Path, tests: Path):
                 raise AssertionError(
                     f"{case}: native exit {result.returncode}; see {run}"
                 )
+            if re.search(
+                r"^(?:==\d+==)?(?:ERROR|WARNING|SUMMARY): "
+                r"(?:Address|Leak|Memory|Thread|UndefinedBehavior)Sanitizer:"
+                r"|^.+:\d+(?::\d+)?: runtime error: "
+                r"|^(?:Address|Memory|UndefinedBehavior)Sanitizer:DEADLYSIGNAL\b",
+                raw,
+                re.M,
+            ):
+                raise AssertionError(f"{case}: sanitizer diagnostic; see {run}")
             if re.search(r"\bFAIL:", raw):
                 raise AssertionError(f"{case}: failed owner assertion; see {run}")
             for hook in hooks:
