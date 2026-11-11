@@ -39,8 +39,12 @@ struct runtime_macro_queue_item {
     bool is_delay;
     bool is_tap;
     bool pressed;
-    uint32_t delay_ms;
-    struct zmk_behavior_binding binding;
+    /* A delay never carries a behavior. Keep the active decoded snapshot
+     * without reserving both payloads for every action. */
+    union {
+        uint32_t delay_ms;
+        struct zmk_behavior_binding binding;
+    };
 };
 
 struct runtime_macro_queue_state {
@@ -64,15 +68,13 @@ struct runtime_macro_player {
     size_t item_count;
     bool queue_ready;
     struct runtime_macro_queue_state queue_state;
-    uint32_t queued_duration_ms;
 };
 
 static void runtime_macro_play_work_handler(struct k_work *work);
 static void runtime_macro_clear_active_work_handler(struct k_work *work);
 static int queue_runtime_macro(const struct runtime_macro_queue_item *items, size_t count,
                                const struct zmk_behavior_binding_event *event,
-                               struct runtime_macro_queue_state *state,
-                               uint32_t *queued_duration_ms);
+                               struct runtime_macro_queue_state *state);
 
 static struct runtime_macro_player player = {
     .lock = Z_MUTEX_INITIALIZER(player.lock),
@@ -446,7 +448,6 @@ static int runtime_macro_start_playback(uint32_t slot,
     player.item_count = 0;
     player.queue_ready = false;
     player.queue_state = (struct runtime_macro_queue_state){0};
-    player.queued_duration_ms = 0;
     player.active = true;
     k_mutex_unlock(&player.lock);
 
@@ -497,8 +498,7 @@ static void runtime_macro_play_work_handler(struct k_work *work) {
         player.queue_ready = true;
     }
 
-    int ret = queue_runtime_macro(player.items, player.item_count, &event, &player.queue_state,
-                                  &player.queued_duration_ms);
+    int ret = queue_runtime_macro(player.items, player.item_count, &event, &player.queue_state);
     if (ret == -ENOMSG || ret == -EAGAIN) {
         // The behavior queue drains on this same system work queue. Yield
         // rather than blocking it, then resume at the first unqueued action.
@@ -533,8 +533,7 @@ static void add_saturating_delay(uint32_t *total_ms, uint32_t delay_ms) {
 
 static int queue_runtime_macro(const struct runtime_macro_queue_item *items, size_t count,
                                const struct zmk_behavior_binding_event *event,
-                               struct runtime_macro_queue_state *state,
-                               uint32_t *queued_duration_ms) {
+                               struct runtime_macro_queue_state *state) {
     if (state->complete) {
         return 0;
     }
@@ -563,7 +562,6 @@ static int queue_runtime_macro(const struct runtime_macro_queue_item *items, siz
             if (ret < 0) {
                 return ret;
             }
-            add_saturating_delay(queued_duration_ms, state->pending_delay_ms);
             state->pending_delay_ms = 0;
         }
 
@@ -572,7 +570,6 @@ static int queue_runtime_macro(const struct runtime_macro_queue_item *items, siz
             if (ret < 0) {
                 return ret;
             }
-            add_saturating_delay(queued_duration_ms, state->tap_ms);
             state->tap_pressed = true;
         }
 
@@ -587,7 +584,6 @@ static int queue_runtime_macro(const struct runtime_macro_queue_item *items, siz
         if (ret < 0) {
             return ret;
         }
-        add_saturating_delay(queued_duration_ms, wait_ms);
         state->tap_pressed = false;
         state->index += following_delay ? 2 : 1;
     }
@@ -597,7 +593,6 @@ static int queue_runtime_macro(const struct runtime_macro_queue_item *items, siz
         if (ret < 0) {
             return ret;
         }
-        add_saturating_delay(queued_duration_ms, state->pending_delay_ms);
         state->pending_delay_ms = 0;
     }
 

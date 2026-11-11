@@ -39,6 +39,8 @@ static void exercise(void *a, void *b, void *c) {
     const char *scenario = getenv("RUNTIME_MACRO_PRESSURE_CASE");
     bool held = scenario && strcmp(scenario, "held") == 0;
     bool deleted = scenario && strcmp(scenario, "delete") == 0;
+    bool renamed = scenario && strcmp(scenario, "rename") == 0;
+    bool rewritten = scenario && strcmp(scenario, "write") == 0;
     uint32_t slot;
     __ASSERT_NO_MSG(zmk_runtime_macro_slot_for_name(held ? "held" : "taps", &slot) == 0);
     struct zmk_behavior_binding_event event = {.position = 0, .timestamp = k_uptime_get()};
@@ -47,6 +49,23 @@ static void exercise(void *a, void *b, void *c) {
     __ASSERT_NO_MSG(zmk_runtime_macro_play(slot, &event) == -EBUSY);
     if (deleted) {
         __ASSERT_NO_MSG(zmk_runtime_macro_delete("taps") == 0);
+    }
+    if (renamed) {
+        __ASSERT_NO_MSG(
+            zmk_runtime_macro_rename("taps", "renamed", ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY) == 0);
+        char name[CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN + 1];
+        uint32_t resolved;
+        __ASSERT_NO_MSG(zmk_runtime_macro_name_for_slot(slot, name, sizeof(name)) == 0);
+        __ASSERT_NO_MSG(strcmp(name, "renamed") == 0);
+        __ASSERT_NO_MSG(zmk_runtime_macro_slot_for_name("renamed", &resolved) == 0 &&
+                        resolved == slot);
+        __ASSERT_NO_MSG(zmk_runtime_macro_slot_for_name("taps", NULL) == -ENOENT);
+    }
+    if (rewritten) {
+        const uint8_t replacement[] = {ZMK_RUNTIME_MACRO_FORMAT_VERSION,
+                                       ZMK_RUNTIME_MACRO_OP_KEY_TAP_SEQUENCE, 1, 7};
+        __ASSERT_NO_MSG(zmk_runtime_macro_write("taps", replacement, sizeof(replacement),
+                                                ZMK_CUSTOM_SETTING_WRITE_MODE_MEMORY) == 0);
     }
     k_sleep(K_MSEC(200));
     const struct edge taps[] = {{4, true},  {4, false}, {5, true},
@@ -64,11 +83,28 @@ static void exercise(void *a, void *b, void *c) {
     __ASSERT_NO_MSG(!zmk_hid_is_pressed(B));
     __ASSERT_NO_MSG(!zmk_hid_is_pressed(C));
     __ASSERT_NO_MSG(zmk_hid_get_keyboard_report()->body.modifiers == 0);
+    if (renamed || rewritten) {
+        __ASSERT_NO_MSG(zmk_runtime_macro_play(slot, &event) == 0);
+        k_sleep(K_MSEC(200));
+        size_t next_count = rewritten ? 2 : ARRAY_SIZE(taps);
+        __ASSERT_NO_MSG(edge_count == count + next_count);
+        for (size_t i = 0; i < next_count; i++) {
+            __ASSERT_NO_MSG(edges[count + i].usage == (rewritten ? 7 : taps[i].usage));
+            __ASSERT_NO_MSG(edges[count + i].pressed == (rewritten ? i == 0 : taps[i].pressed));
+        }
+        __ASSERT_NO_MSG(!zmk_hid_is_pressed(A));
+        __ASSERT_NO_MSG(!zmk_hid_is_pressed(B));
+        __ASSERT_NO_MSG(!zmk_hid_is_pressed(C));
+        __ASSERT_NO_MSG(!zmk_hid_is_pressed(D));
+        __ASSERT_NO_MSG(zmk_hid_get_keyboard_report()->body.modifiers == 0);
+    }
     printf("PASS runtime macro queue pressure scenario=%s ordered=%u released=1\n",
-           held      ? "held"
-           : deleted ? "delete"
-                     : "taps",
-           (unsigned)count);
+           held        ? "held"
+           : deleted   ? "delete"
+           : renamed   ? "rename"
+           : rewritten ? "write"
+                       : "taps",
+           (unsigned)edge_count);
     exit(0);
 }
 K_THREAD_DEFINE(runtime_macro_pressure_thread, 4096, exercise, NULL, NULL, NULL, 5, 0, 0);

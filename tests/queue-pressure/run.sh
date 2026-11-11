@@ -22,7 +22,7 @@ west build -p=always -o=-j1 -s "$zmk_source/app" -d "$build" \
 cp "$build/CMakeCache.txt" "$build/zephyr/.config" "$build/zephyr/zephyr.dts" \
    "$build/zephyr/zmk.exe" "$build/zephyr/zmk.elf" "$output/"
 failed=0
-for scenario in taps held delete; do
+for scenario in taps held delete rename write; do
   for run in 1 2 3; do
     status=0
     RUNTIME_MACRO_PRESSURE_CASE="$scenario" timeout 10 "$build/zephyr/zmk.exe" \

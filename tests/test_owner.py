@@ -13,6 +13,7 @@ from test_timeout_width import TimeoutWidth as TimeoutWidth
 
 from test_build_budget import BuildBudgetContract as BuildBudgetContract
 from test_arm_memory import ArmResponseMemoryContract as ArmResponseMemoryContract
+from test_player_memory import PlayerMemoryContract as PlayerMemoryContract
 from arm_memory import verify_artifact
 
 THIS_DIR = Path(__file__).resolve().parent.parent
@@ -93,7 +94,7 @@ class WestCommandsTests(unittest.TestCase):
             result.stdout + result.stderr, encoding="utf-8"
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        for scenario in ("taps", "held", "delete"):
+        for scenario in ("taps", "held", "delete", "rename", "write"):
             self.assertEqual(
                 result.stdout.count(
                     "PASS runtime macro queue pressure scenario=" + scenario

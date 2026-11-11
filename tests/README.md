@@ -392,6 +392,41 @@ three times by the native verifier. `tests/review` retains 32/33/64-tap producer
 controls, packed/nonpacked default waits and 31/32/33-byte real nanopb name bounds.
 The canonical owner entry dispatches these alongside all existing assertions.
 
+## Decoded playback storage
+
+The player retains its own complete decoded action snapshot while playback is
+active. A delay and a behavior binding share one payload because an action can
+use only one of them. The action limit, encoded snapshot, shared registry pool,
+tap policy and completion-marker ownership are unchanged. The former cumulative
+queued-duration field had no reader and is removed; completion still follows the
+actual behavior queue marker rather than an estimated duration.
+
+`tests/test_player_memory.py`, included in the canonical owner entry, compiles
+the actual private action declaration with the selected core's binding declaration.
+ARM, native32 and native64 each retain both binding-local-ID configurations.
+The named `Runtime Macro decoded action RAM` bound refuses the original separate
+payloads on ARM/native32; native64 is an alignment control, not a RAM-saving claim.
+Objects, symbols, compiler commands and source hashes are retained in the printed
+fresh container output directory. This is a static type allocation check, not
+firmware execution or a stack/heap high-water measurement.
+
+The existing 32/33/64-tap review and real-kernel checks now sum waits only after
+the actual queue accepts an item, independently of player state, and require the
+exact total. The review fixture also forces a one-entry queue through mixed
+leading/adjacent/trailing delays, held down/up actions and a tap. It compares all
+eight accepted actions, waits, full-width parameters, position and completion
+marker exactly, then requires released state and idempotent completion. Existing
+native ordered snapshots, queue-pressure deletion and held-key controls remain.
+The real-kernel pressure fixture also renames or rewrites a macro after decoding:
+the active sequence must finish its original exact edges, and the next invocation
+must observe the same slot's renamed body or replacement body with all keys released.
+All five pressure scenarios run three times on the same binary.
+Set `RUNTIME_MACRO_REVIEW_OUTPUT` to a fresh absolute path in the mounted results
+volume to retain the review translation unit, strict sanitizer binary, source
+hashes, compiler command/output and each scenario's ordered log and exit. Existing
+paths and symlinks are refused. Without it the review entry retains its temporary
+cleanup behavior.
+
 ## Persistent rename integration and coverage boundaries
 
 `test_persist_rename_recovery()` in the existing checked registry fixture uses

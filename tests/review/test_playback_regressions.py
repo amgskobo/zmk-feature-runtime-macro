@@ -5,6 +5,7 @@ are controlled stand-ins here; real scheduling requires the native fixture.
 """
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -113,10 +114,16 @@ static int zmk_behavior_invoke_binding(const struct zmk_behavior_binding *b, str
 KERNEL_QUEUE = r"""
 static struct q_item queued[64];
 static int zmk_behavior_queue_msgq;
-static unsigned head, used;
+static unsigned head, used, queue_limit=64;
+static uint32_t accepted_wait_ms;
+static struct q_item accepted[132];
+static size_t accepted_count;
 static int k_msgq_put(int *q, const struct q_item *item, int wait) {
     (void)q; (void)wait;
-    if (used==64) return -ENOMSG;
+    if (used==queue_limit) return -ENOMSG;
+    assert(accepted_count<ARRAY_SIZE(accepted));
+    accepted[accepted_count++]=*item;
+    accepted_wait_ms+=item->wait;
     queued[(head+used)%64]=*item; used++; return 0;
 }
 static int k_msgq_get(int *q, struct q_item *item, int wait) {
@@ -134,20 +141,60 @@ int main(int argc,char **argv) {
         unsigned count=atoi(argv[1]+6);
         struct runtime_macro_queue_item items[64]={0};
         for (unsigned i=0;i<count;i++) items[i]=(struct runtime_macro_queue_item){.is_tap=true,.binding={.behavior_dev="key_press",.param1=A}};
-        uint32_t duration=0;
         struct runtime_macro_queue_state state={0};
         int ret;
         do {
-            ret=queue_runtime_macro(items,count,&(struct zmk_behavior_binding_event){0},&state,&duration);
+            ret=queue_runtime_macro(items,count,&(struct zmk_behavior_binding_event){0},&state);
             if (ret==-ENOMSG || ret==-EAGAIN) {
                 queue_work.pending=false;
                 behavior_queue_process_next(&queue_work.work);
             }
         } while (ret==-ENOMSG || ret==-EAGAIN);
-        assert(queue_runtime_macro(items,count,&(struct zmk_behavior_binding_event){0},&state,&duration)==0);
+        assert(queue_runtime_macro(items,count,&(struct zmk_behavior_binding_event){0},&state)==0);
         while (queue_work.pending || used) { queue_work.pending=false; behavior_queue_process_next(&queue_work.work); }
-        printf("taps=%u, ret=%d, invoked=%d, held=%d, queued duration=%u\n",count,ret,invoked,held,duration);
+        printf("taps=%u, ret=%d, invoked=%d, held=%d, accepted wait=%u\n",count,ret,invoked,held,accepted_wait_ms);
         assert(ret==0 && held==0 && invoked==(int)count*2);
+        assert(accepted_wait_ms==count*30 && accepted_count==count*2+1);
+    } else if (strcmp(argv[1],"mixed")==0) {
+        struct runtime_macro_queue_item items[]={
+            {.is_delay=true,.delay_ms=17},
+            {.is_delay=true,.delay_ms=23},
+            {.pressed=true,.binding={.behavior_dev="key_press",.param1=A,.param2=UINT32_MAX}},
+            {.is_delay=true,.delay_ms=5},
+            {.is_delay=true,.delay_ms=7},
+            {.is_tap=true,.binding={.behavior_dev="key_press",.param1=B,.param2=UINT32_MAX-1}},
+            {.is_delay=true,.delay_ms=9},
+            {.binding={.behavior_dev="key_press",.param1=A,.param2=UINT32_MAX}},
+            {.is_delay=true,.delay_ms=11},
+            {.is_delay=true,.delay_ms=13},
+        };
+        queue_limit=1;
+        struct runtime_macro_queue_state state={0};
+        int ret;
+        do {
+            ret=queue_runtime_macro(items,ARRAY_SIZE(items),&(struct zmk_behavior_binding_event){.position=42},&state);
+            if (ret==-ENOMSG || ret==-EAGAIN) {
+                queue_work.pending=false;
+                behavior_queue_process_next(&queue_work.work);
+            }
+        } while (ret==-ENOMSG || ret==-EAGAIN);
+        size_t completed=accepted_count;
+        assert(queue_runtime_macro(items,ARRAY_SIZE(items),&(struct zmk_behavior_binding_event){.position=42},&state)==0);
+        assert(completed==accepted_count);
+        while (queue_work.pending || used) { queue_work.pending=false; behavior_queue_process_next(&queue_work.work); }
+        const uint32_t waits[]={40,5,7,30,9,11,13,0};
+        const uint32_t keys[]={0,A,0,B,B,A,0,RUNTIME_MACRO_COMPLETE_PARAM};
+        const uint32_t params[]={0,UINT32_MAX,0,UINT32_MAX-1,UINT32_MAX-1,UINT32_MAX,0,0};
+        const bool presses[]={true,true,true,true,false,false,true,true};
+        assert(ret==0 && held==0 && invoked==4 && accepted_count==ARRAY_SIZE(waits));
+        for (size_t i=0;i<accepted_count;i++) {
+            assert(accepted[i].wait==waits[i] && accepted[i].binding.param1==keys[i]);
+            assert(accepted[i].binding.param2==params[i] && accepted[i].press==presses[i]);
+            assert(accepted[i].position==42);
+            assert(strcmp(accepted[i].binding.behavior_dev,(i==1 || i==3 || i==4 || i==5)?"key_press":RUNTIME_MACRO_WAIT_BEHAVIOR_NAME)==0);
+            printf("mixed action=%zu wait=%u param1=%u param2=%u pressed=%u\n",i,waits[i],keys[i],params[i],presses[i]);
+        }
+        assert(accepted_wait_ms==115);
     } else {
         bool nonpacked=strncmp(argv[1],"nonpacked-",10)==0;
         unsigned wait=atoi(argv[1]+(nonpacked?10:0));
@@ -175,9 +222,17 @@ int main(int argc,char **argv) {
 class PlaybackRegressions(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.temp = tempfile.TemporaryDirectory(prefix="macro-review-")
-        cls.addClassCleanup(cls.temp.cleanup)
-        work = Path(cls.temp.name)
+        retained = os.environ.get("RUNTIME_MACRO_REVIEW_OUTPUT")
+        if retained:
+            work = Path(retained)
+            if not work.is_absolute() or work.exists() or work.is_symlink():
+                raise ValueError("Use a fresh absolute RUNTIME_MACRO_REVIEW_OUTPUT")
+            work.mkdir(parents=True)
+        else:
+            cls.temp = tempfile.TemporaryDirectory(prefix="macro-review-")
+            cls.addClassCleanup(cls.temp.cleanup)
+            work = Path(cls.temp.name)
+        print(f"Playback review evidence: {work}", flush=True)
         source = ROOT / "src/runtime_macro.c"
         defaults = ROOT / "src/runtime_macro_dt_defaults.c"
         zmk = Path(os.environ["ZMK_ROOT"])
@@ -214,29 +269,31 @@ class PlaybackRegressions(unittest.TestCase):
             unit += function(defaults, name)
         path = work / "review.c"
         path.write_text(unit + SCENARIO)
-        print(
-            "Source identities:",
-            {
-                str(p): hashlib.sha256(p.read_bytes()).hexdigest()
-                for p in (source, defaults, core)
-            },
-            flush=True,
-        )
+        inputs = {
+            str(p): hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in (source, defaults, core)
+        }
+        print("Source identities:", inputs, flush=True)
         cls.binary = work / "review"
-        subprocess.run(
-            [
-                "cc",
-                "-std=c11",
-                "-O1",
-                "-g",
-                "-fsanitize=address,undefined",
-                "-fno-sanitize-recover=all",
-                "-I" + str(zmk / "app/include"),
-                str(path),
-                "-o",
-                str(cls.binary),
-            ],
-            check=True,
+        command = [
+            "cc",
+            "-std=c11",
+            "-O1",
+            "-g",
+            "-fsanitize=address,undefined",
+            "-fno-sanitize-recover=all",
+            "-I" + str(zmk / "app/include"),
+            str(path),
+            "-o",
+            str(cls.binary),
+        ]
+        (work / "compile-inputs.json").write_text(
+            json.dumps({"command": command, "source_sha256": inputs}, indent=2) + "\n"
+        )
+        with (work / "compile.log").open("x") as stream:
+            subprocess.run(command, check=True, stdout=stream, stderr=subprocess.STDOUT)
+        (work / "review.sha256").write_text(
+            hashlib.sha256(cls.binary.read_bytes()).hexdigest() + "  review\n"
         )
 
     def case(self, name):
@@ -245,6 +302,10 @@ class PlaybackRegressions(unittest.TestCase):
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+        )
+        (self.binary.parent / f"run-{name}.log").write_text(result.stdout)
+        (self.binary.parent / f"run-{name}.exit").write_text(
+            str(result.returncode) + "\n"
         )
         print(name + f": exit={result.returncode}\n" + result.stdout, flush=True)
         self.assertEqual(result.returncode, 0, result.stdout)
@@ -257,6 +318,9 @@ class PlaybackRegressions(unittest.TestCase):
 
     def test_maximum_decoded_taps_release_every_press(self):
         self.case("queue-64")
+
+    def test_mixed_actions_keep_exact_order_and_waits_under_pressure(self):
+        self.case("mixed")
 
     def test_packed_sequence_without_wait_control(self):
         self.case("0")

@@ -23,7 +23,7 @@ text += declaration(source, "struct", "runtime_macro_queue_state")
 for name in ("queue_behavior", "add_saturating_delay", "queue_runtime_macro"):
     text += function(source, name)
 text += r"""
-int review_queue(unsigned taps, uint32_t *duration) {
+int review_queue(unsigned taps) {
     struct runtime_macro_queue_item items[64] = {0};
     if (taps > 64) return -EINVAL;
     for (unsigned i=0; i<taps; i++) {
@@ -31,10 +31,9 @@ int review_queue(unsigned taps, uint32_t *duration) {
             .binding={.behavior_dev="key_press", .param1=0x70004}};
     }
     struct runtime_macro_queue_state state={0};
-    *duration=0;
     int ret;
     do {
-        ret=queue_runtime_macro(items,taps,&(struct zmk_behavior_binding_event){0},&state,duration);
+        ret=queue_runtime_macro(items,taps,&(struct zmk_behavior_binding_event){0},&state);
         if (ret==-ENOMSG || ret==-EAGAIN) k_sleep(K_MSEC(1));
     } while (ret==-ENOMSG || ret==-EAGAIN);
     return ret;

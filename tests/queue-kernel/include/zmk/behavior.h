@@ -12,4 +12,4 @@ struct zmk_behavior_binding_event {
 };
 int zmk_behavior_invoke_binding(const struct zmk_behavior_binding *binding,
                                 struct zmk_behavior_binding_event event, bool pressed);
-int review_queue(unsigned taps, uint32_t *duration);
+int review_queue(unsigned taps);

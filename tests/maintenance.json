@@ -44,6 +44,13 @@
     "physical": "NOT RUN",
     "production_use": "The current completion-marker player does not call this private arithmetic helper; numerical/object-width checks do not establish playback timing."
   },
+  "playback_storage": {
+    "fixtures": "tests/test_player_memory.py; tests/review/test_playback_regressions.py; tests/queue-kernel",
+    "contract": "Retain the active decoded snapshot and all configured capacities. Mutually exclusive delay/binding payloads share storage; remove only the unconsumed cumulative-duration field. Queue retry cursors, tap releases, pending-delay sums and completion-marker ownership remain independent.",
+    "allocation": "Actual owner action and selected core binding declarations compile for ARM/native32/native64, each with binding-local-IDs disabled/enabled. The named Runtime Macro decoded action RAM assertion refuses original separate payloads on ARM/native32. Native64 is an alignment control. Actual linked production RAM is a separate integration measurement.",
+    "ordering": "All previous32/33/64-tap scenarios retain release checks and add exact accepted-wait totals at the queue boundary. A one-entry queue compares eight exact mixed delay/hold/tap/completion actions, full32-bit parameters, position, waits, release state and idempotent completion. Five real-kernel pressure scenarios run three times on one binary; rename/write during active playback retain the original sequence and the next invocation observes the same slot's current registry body.",
+    "limits": "Static allocation and controlled/native queue checks; no physical HID/transport timing, stack/heap high-water, public abort or arbitrary behavior-resource cleanup claim."
+  },
   "web_session": {
     "fixtures": [
       "tests/web/sessionLifecycle.spec.tsx",
