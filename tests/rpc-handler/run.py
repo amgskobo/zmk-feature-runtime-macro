@@ -13,6 +13,8 @@ import sys
 import tempfile
 import time
 
+from list_wire import load_protocol, verify_vectors
+
 root = Path(__file__).resolve().parents[2]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument(
@@ -28,7 +30,15 @@ parser.add_argument(
 )
 parser.add_argument(
     "--variant",
-    choices=("all", "optimized", "sanitized", "large-body", "max-name", "oversize"),
+    choices=(
+        "all",
+        "optimized",
+        "sanitized",
+        "large-body",
+        "max-name",
+        "oversize",
+        "list-wire",
+    ),
     default="all",
     help="focus on one variant; only all is the complete canonical handler matrix",
 )
@@ -156,7 +166,25 @@ with storage as folder:
             initial_state = work / f"{label}-run-1"
             initial_state.mkdir()
             kwargs["cwd"] = initial_state
-        invoke(f"run-{label}", [str(binary)], check=True, timeout=20, **kwargs)
+        try:
+            result = invoke(
+                f"run-{label}",
+                [str(binary)],
+                capture=args.output is None,
+                check=True,
+                timeout=20,
+                **kwargs,
+            )
+        except subprocess.CalledProcessError as error:
+            if args.output is None:
+                sys.stdout.write(error.stdout or "")
+                sys.stderr.write(error.stderr or "")
+            raise
+        if args.output is not None:
+            return (work / f"run-{label}.log").read_text()
+        sys.stdout.write(result.stdout)
+        sys.stderr.write(result.stderr)
+        return result.stdout
 
     def run():
         if args.variant != "all":
@@ -222,10 +250,60 @@ with storage as folder:
             path = work / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("/* Controlled framework API; see handler_test.c. */\n")
+        protocol = load_protocol(work, root)
+        generated_profiles = {}
+
+        def generated_profile(count, name_max):
+            template = root / "proto/cormoran/runtime_macro/runtime_macro.options.in"
+            if not template.exists():
+                return work
+            # Invalid compiler controls still use an in-protocol layout, then
+            # require the real handler's named count/name refusal.
+            key = (min(count, 16), min(name_max, 32))
+            if key in generated_profiles:
+                return generated_profiles[key]
+            destination = work / f"generated-{key[0]}-{key[1]}"
+            destination.mkdir()
+            text = template.read_text().replace(
+                "@RUNTIME_MACRO_NANOPB_OPTIONS@",
+                template.with_suffix("").read_text(),
+            )
+            text = text.replace("@CONFIG_ZMK_RUNTIME_MACRO_COUNT@", str(key[0]))
+            text = text.replace("@CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN@", str(key[1]))
+            if "@" in text:
+                raise AssertionError("Unresolved Macro options template")
+            options = destination / "runtime_macro.options"
+            options.write_text(text)
+            invoke(
+                f"generate-{key[0]}-{key[1]}",
+                [
+                    "python3",
+                    str(work / "generator/nanopb_generator.py"),
+                    "-I",
+                    str(root / "proto"),
+                    "-f",
+                    str(options),
+                    "-D",
+                    str(destination),
+                    str(root / "proto/cormoran/runtime_macro/runtime_macro.proto"),
+                ],
+                check=True,
+                timeout=60,
+            )
+            generated_profiles[key] = destination
+            return destination
 
         def compile_handler(
-            binary, label, flags, count=8, name_max=24, macro_bytes=256, record=None
+            binary,
+            label,
+            flags,
+            count=8,
+            name_max=24,
+            macro_bytes=256,
+            record=None,
+            standalone=False,
         ):
+            generated = work if standalone else generated_profile(count, name_max)
             result = invoke(
                 "compile-" + (record or label),
                 [
@@ -242,11 +320,12 @@ with storage as folder:
                     f"-DCONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES={macro_bytes}",
                     f'-DHANDLER_SOURCE="{args.source.resolve()}"',
                     f'-DTEST_VARIANT="{label}"',
+                    "-I" + str(generated),
                     "-I" + str(work),
                     "-I" + str(nanopb),
                     "-I" + str(root / "include"),
                     str(root / "tests/rpc-handler/handler_test.c"),
-                    str(work / "cormoran/runtime_macro/runtime_macro.pb.c"),
+                    str(generated / "cormoran/runtime_macro/runtime_macro.pb.c"),
                     *(
                         str(nanopb / f"pb_{part}.c")
                         for part in ("common", "encode", "decode")
@@ -284,7 +363,10 @@ with storage as folder:
             built = compile_handler(binary, label, flags)
             if built.returncode:
                 raise SystemExit(built.stdout + built.stderr)
-            execute(binary, label, env={**os.environ, "ASAN_OPTIONS": "detect_leaks=0"})
+            log = execute(
+                binary, label, env={**os.environ, "ASAN_OPTIONS": "detect_leaks=0"}
+            )
+            verify_vectors(log, protocol, 8, 24, 256)
 
         # A supported larger body must not move its staging onto the 4 KiB RPC
         # stack. The original pair of automatic 2048-byte arrays fails this guard.
@@ -298,7 +380,55 @@ with storage as folder:
             )
             if built.returncode:
                 raise SystemExit(built.stdout + built.stderr)
-            execute(large, "large-body")
+            log = execute(large, "large-body")
+            verify_vectors(log, protocol, 8, 24, 2048)
+
+        if args.variant in ("all", "list-wire"):
+            for count in (8, 16):
+                for name_max in (24, 32):
+                    for label, flags in variants.items():
+                        profile = f"list-{count}-{name_max}-{label}"
+                        binary = work / profile
+                        built = compile_handler(
+                            binary,
+                            profile,
+                            flags,
+                            count=count,
+                            name_max=name_max,
+                            record=profile,
+                        )
+                        if built.returncode:
+                            raise SystemExit(built.stdout + built.stderr)
+                        log = execute(
+                            binary,
+                            profile,
+                            env={
+                                **os.environ,
+                                "ASAN_OPTIONS": "detect_leaks=0",
+                                "MACRO_RPC_LIST_ONLY": "1",
+                            },
+                        )
+                        verify_vectors(log, protocol, count, name_max, 256)
+            print("runtime macro list profiles: PASS profiles=4 variants=2 vectors=32")
+            binary = work / "list-standalone"
+            built = compile_handler(
+                binary,
+                "list-standalone",
+                ["-O2"],
+                count=16,
+                name_max=32,
+                record="list-standalone",
+                standalone=True,
+            )
+            if built.returncode:
+                raise SystemExit(built.stdout + built.stderr)
+            log = execute(
+                binary,
+                "list-standalone",
+                env={**os.environ, "MACRO_RPC_LIST_ONLY": "1"},
+            )
+            verify_vectors(log, protocol, 16, 32, 256)
+            print("runtime macro standalone list: PASS count=16 name=32 vectors=4")
 
         # The documented 32 content bytes plus NUL must fit; 33 content bytes
         # remain outside the wire capacity. Preserve slot-capacity rejection.

@@ -51,8 +51,9 @@ ZMK_RPC_CUSTOM_SUBSYSTEM_RESPONSE_BUFFER(cormoran__runtime_macro, cormoran_runti
 
 /* Every slot fits one ListMacros reply, every name fits the name fields, and
  * one KEY_TAP_SEQUENCE opcode maps to exactly one KeyTapSequenceStep. */
-BUILD_ASSERT(CONFIG_ZMK_RUNTIME_MACRO_COUNT <=
-                 ARRAY_SIZE(((cormoran_runtime_macro_ListMacrosResponse *)NULL)->macros),
+BUILD_ASSERT(CONFIG_ZMK_RUNTIME_MACRO_COUNT <= 16 &&
+                 CONFIG_ZMK_RUNTIME_MACRO_COUNT <=
+                     ARRAY_SIZE(((cormoran_runtime_macro_ListMacrosResponse *)NULL)->macros),
              "CONFIG_ZMK_RUNTIME_MACRO_COUNT exceeds the ListMacrosResponse capacity");
 BUILD_ASSERT(CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN <
                      sizeof(((cormoran_runtime_macro_MacroSummary *)NULL)->name) &&

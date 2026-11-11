@@ -1,0 +1,4 @@
+@RUNTIME_MACRO_NANOPB_OPTIONS@
+# Keep the complete frozen metadata response, sized for configured capacities.
+cormoran.runtime_macro.ListMacrosResponse.macros max_count:@CONFIG_ZMK_RUNTIME_MACRO_COUNT@
+cormoran.runtime_macro.MacroSummary.name max_length:@CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN@

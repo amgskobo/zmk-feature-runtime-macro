@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <pb_decode.h>
 #include <pb_encode.h>
@@ -59,6 +60,10 @@ struct zmk_custom_setting_value {
 #define ZMK_CUSTOM_SETTING_VALUE_INT32(v) ((struct zmk_custom_setting_value){.int32_value = (v)})
 
 static unsigned mutations;
+enum list_mode { LIST_ORIGINAL, LIST_MAXIMUM, LIST_HOLES, LIST_EMPTY, LIST_ERROR };
+static enum list_mode list_mode;
+static bool list_corrupted;
+static unsigned list_reads;
 static bool have_default;
 static enum zmk_custom_setting_write_mode last_body_write_mode;
 static int suppress_depth;
@@ -221,6 +226,30 @@ int zmk_runtime_macro_name_for_slot(uint32_t slot, char *name, size_t capacity) 
 size_t zmk_runtime_macro_pool_total(void) { return 1024; }
 size_t zmk_runtime_macro_pool_used(void) { return 0; }
 int zmk_runtime_macro_for_each(zmk_runtime_macro_iter_cb_t cb, void *user_data) {
+    if (list_mode != LIST_ORIGINAL) {
+        list_reads++;
+        if (list_corrupted) {
+            return -EIO;
+        }
+        for (uint32_t slot = 0; slot < CONFIG_ZMK_RUNTIME_MACRO_COUNT; slot++) {
+            if (list_mode == LIST_EMPTY || (list_mode == LIST_HOLES && (slot == 1 || slot == 3))) {
+                continue;
+            }
+            if (list_mode == LIST_ERROR && slot == 2) {
+                return -EIO;
+            }
+            char name[CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN + 1];
+            for (size_t i = 0; i < sizeof(name) - 1; i++) {
+                name[i] = 'A' + (slot + i) % 26;
+            }
+            name[sizeof(name) - 1] = '\0';
+            int ret = cb(slot, name, slot == 2 ? 0 : UINT32_MAX - slot, slot % 2, user_data);
+            if (ret < 0) {
+                return ret;
+            }
+        }
+        return 0;
+    }
     for (uint32_t i = 0; i < CONFIG_ZMK_RUNTIME_MACRO_COUNT; i++) {
         if (store[i].in_use) {
             int ret = cb(i, store[i].name, store[i].size, false, user_data);
@@ -321,7 +350,56 @@ static void expect_steps(const cormoran_runtime_macro_MacroStep *steps, size_t c
     assert(actual_size == expected_size && memcmp(actual, expected, actual_size) == 0);
 }
 
+static void list_wire_vector(enum list_mode mode, const char *name) {
+    list_mode = mode;
+    list_corrupted = false;
+    list_reads = 0;
+    lock_state = ZMK_STUDIO_CORE_LOCK_STATE_LOCKED;
+    cormoran_runtime_macro_Request req = request(cormoran_runtime_macro_Request_list_macros_tag);
+    const unsigned before = mutations;
+    call(&req);
+    assert(mutations == before && list_reads == 1);
+    if (mode == LIST_ERROR) {
+        expect_error("Runtime macro RPC failed: -5");
+    } else {
+        assert(response.which_response_type == cormoran_runtime_macro_Response_list_macros_tag);
+    }
+    size_t expected_size;
+    assert(pb_get_encoded_size(&expected_size, cormoran_runtime_macro_Response_fields, &response));
+    list_corrupted = true;
+    static uint8_t encoded[4096];
+    pb_ostream_t stream = pb_ostream_from_buffer(encoded, sizeof(encoded));
+    assert(pb_encode(&stream, cormoran_runtime_macro_Response_fields, &response));
+    assert(stream.bytes_written == expected_size);
+    size_t repeated_size;
+    assert(pb_get_encoded_size(&repeated_size, cormoran_runtime_macro_Response_fields, &response));
+    assert(repeated_size == expected_size && list_reads == 1);
+    printf("WIRE %s ", name);
+    for (size_t i = 0; i < stream.bytes_written; i++) {
+        printf("%02x", encoded[i]);
+    }
+    printf("\n");
+    list_mode = LIST_ORIGINAL;
+    list_corrupted = false;
+}
+
+static void list_wire_vectors(void) {
+    list_wire_vector(LIST_MAXIMUM, "maximum");
+    list_wire_vector(LIST_HOLES, "holes");
+    list_wire_vector(LIST_EMPTY, "empty");
+    list_wire_vector(LIST_ERROR, "iterator_error");
+    printf("runtime macro list wire: PASS count=%d name=%d bytes=%d\n",
+           CONFIG_ZMK_RUNTIME_MACRO_COUNT, CONFIG_ZMK_RUNTIME_MACRO_NAME_MAX_LEN,
+           CONFIG_ZMK_RUNTIME_MACRO_MAX_BYTES);
+    printf("runtime macro response bytes: %zu\n", sizeof(response));
+    printf("runtime macro response alignment: %zu\n", _Alignof(cormoran_runtime_macro_Response));
+}
+
 int main(void) {
+    if (getenv("MACRO_RPC_LIST_ONLY")) {
+        list_wire_vectors();
+        return 0;
+    }
     const pb_size_t locked_out[] = {
         cormoran_runtime_macro_Request_get_macro_tag,
         cormoran_runtime_macro_Request_set_macro_step_count_tag,
@@ -543,6 +621,7 @@ int main(void) {
     call(&req);
     expect_error(NO_MACRO_IN_SLOT);
     (void)runtime_macro_meta;
+    list_wire_vectors();
     printf("runtime macro rpc handler: PASS variant=%s\n", TEST_VARIANT);
     return 0;
 }

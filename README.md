@@ -256,6 +256,19 @@ Raise `POOL_BYTES` if you want many long macros to coexist; raise `MAX_BYTES` (a
 
 If the pool is full, creating or updating a macro fails and the Web UI shows **"Macro pool full: delete or shrink another macro"** - the macro's previous value is left untouched. The Web UI also shows the pool's current usage (e.g. "Shared macro pool: 300/1024 B used") next to the macro list. Raising `CONFIG_ZMK_RUNTIME_MACRO_COUNT` costs a small, fixed amount of RAM per extra slot regardless of the pool budget - it does not affect how many bytes of macro content fit.
 
+The Studio metadata response keeps a complete frozen list before encoding and
+allocates its inline entries/names for these configured limits. On the selected
+ARM ABI it uses 304 bytes with the default 8 slots and 24-byte names, and 720
+with 16 slots and 32-byte names, versus 784 in the previous fixed16-slot layout.
+Native64 has separate 312/728-byte bounds because the existing streamed-body
+member aligns the response union to 8 bytes. The protocol still supports 16
+slots and 32 content bytes per name; request slots, body parameters and encoded
+sizes remain 32 bits.
+Playback, the shared pool, queue/staging capacities and persistence are unchanged.
+The [owner checks](tests/README.md) bind these static allocations to actual
+generated types, compiled source, maps and ELF symbols; they do not measure
+runtime stack/heap peaks.
+
 ## Upgrading from a pre-keyspace release
 
 This module's macro storage uses the keyspace feature of [zmk-feature-custom-settings](https://github.com/amgskobo/zmk-feature-custom-settings), with the shared pool and limits described above. Upgrading from the former numeric-slot storage is a **breaking storage-schema and RPC change**:

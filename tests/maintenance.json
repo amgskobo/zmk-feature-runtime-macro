@@ -22,6 +22,14 @@
     "Body authorization is checked at steps-callback entry, not at every later transport wait. General concurrent registry lifecycle publication and arbitrary behavior-resource cancellation are not established."
   ],
   "native_verification": "tests/native_verifier.py: actual exit, diagnostic-syntax sanitizer rejection even with recovering process0/init0/matching trace, registered test completion, raw ordered logs, unchanged snapshots, identical binary repeated three times. Real compiled ASan stdout/UBSan stderr controls and a benign sanitizer-name/configuration positive preserve all earlier role/config/hook/fixture assertions; native-sanitizer-admission removes only the diagnostic rejection in an isolated copy.",
+  "static_metadata_memory": {
+    "contract": "Complete frozen inline list, configured COUNT1..16/name1..32; unchanged wire/storage schema,32 accepted/33 rejected content-byte boundary, full32 requests/encoded sizes/delays/binding parameters. Only proven iterator slot0..COUNT-1 narrows8bits. No player/pool/queue/staging/stack/heap relocation.",
+    "matrix": "Canonical complete handler retains3 original full executables and adds8 crossed COUNT8/16 xNAME24/32 optimized/strictASanUBSan +1 standalone16/name32 executable. Twelve binaries x4 exact independent Python-protobuf vectors=48; max/holes/read-error/empty/partial-iteration-error, locked reads, unsaved flags/full32 values and frozen sizing/output interleave. Original17-slot/33-name compiler controls and31/32/33 decoder controls all retained.",
+    "ARM": "Actual compiled owner/config/map/ELF response guard across6 boards, retaining all5 originals:304B default8/24,720B supported16/32 vs784B original. Native64 union ABI312/728 vs792; intermediate8/32 and16/24 ARM368/592, native64+8. Min floors104 ARM/native32,112 native64. Explicit measured alignment profiles, no relaxed ARM cap.",
+    "generation": "Actual owner CMake/selected public FindNanopb .options.in, standalone .options16/name32 fallback, base CMAKE_CONFIGURE_DEPENDS and automatic template refresh; ARM type/full32 request/parameter/size/name proofs. Protocol object fixture does not execute firmware.",
+    "negative_controls": "Old actual allocations fail Configured Macro Response RAM. fixed-capacity must fail that named assertion; missing-base-dependency must fail Base options dependency did not reconfigure after successful generation/compilation. Initial native64 expectation mismatch is preserved as ABI oracle failure, never a product runtime or qualified mutation result.",
+    "limits": "Controlled producer/wire/source generation and static allocation proof; original full-native core signed-shift sanitizer limit, concurrent lifecycle and physical delivery/persistence gaps remain."
+  },
   "custom_settings_dependency": {
     "url": "https://github.com/amgskobo/zmk-feature-custom-settings",
     "revision": "c4071b095c3007d1deb055c609603ca9b5897d14",

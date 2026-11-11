@@ -127,6 +127,47 @@ handler binaries once each, compiles the accepted32-byte name variant, and check
 both17-slot and33-byte-name compiler refusals using their existing diagnostics.
 All compiler flags, C assertions and default execution counts are retained.
 
+The complete handler matrix also runs four list profiles (8/16 slots crossed
+with24/32-byte name limits) in optimized and strict ASan/UBSan variants, plus
+standalone protocol16/name32 generation. These nine additional executables
+preserve the original three complete body/lock/edit/frame cases. All twelve
+executables must emit four exact ordered metadata vectors each: maximum,
+holes/unreadable-name omissions, empty and iterator failure after partial
+collection. An independent Python protobuf encoder checks every name/slot,
+full32-bit encoded size, unsaved flag and advertised limit. Controlled store
+changes after initial sizing must not alter later sizing/output or reread the
+live iterator. `--variant list-wire` selects just the additional list profiles;
+it does not replace the complete matrix.
+
+The `.proto` wire schema and32-content-byte string boundary remain unchanged.
+The ordinary `.options` is the standalone16-slot/name32 fallback. Selected public
+FindNanopb configures `.options.in` with the actual count/name limit, while only
+the outbound iterator's proven0..COUNT-1 slot uses8-bit storage; request slots,
+encoded sizes, delays and binding parameters remain32 bits. A copied name is
+accepted only when the actual registry API returns its complete configured
+length, so the reply retains every admitted byte. The inline response remains
+frozen before encoding; no list callback, heap/stack displacement or player/
+pool/queue/staging change is introduced. ARM/native32 bounds are304/368/592/720
+for8/24,8/32,16/24,16/32; native64's existing callback union alignment adds8 bytes
+for these profiles. Minimum count/name floors remain104 on ARM/native32 and112
+on native64. The original784/792-byte layouts must fail the named allocation
+guard. The original31/32/33-byte decoder controls remain required for all six
+name fields, including the32-byte accepted and33-byte rejected cases.
+
+`tests/proto-layout/run.py --output FRESH_ABSOLUTE_DIRECTORY` runs the actual
+owner CMake and selected public FindNanopb, compiling only generated ARM protocol
+objects and a type witness. Both8/24 and16/32 profiles, unchanged32-bit fields,
+unchanged request/detail name capacities, and both base/template automatic
+refreshes must complete. Its `fixed-capacity` control must fail the named
+configured RAM assertion; `missing-base-dependency` must fail the named base
+refresh assertion after successful configuration/compilation. Setup errors do
+not qualify. All five original ARM board variants remain, with a sixth16-slot/
+name32 RPC variant. `tests/arm_memory.py` checks actual compiled owner sources,
+effective config and matching map/ELF response addresses/sizes, including no
+response when RPC is disabled. These are static allocations and controlled
+protocol/generation checks, not firmware execution by the type fixture or
+physical transport, flash, stack/heap high-water or concurrent lifecycle proof.
+
 `--variant optimized`, `sanitized` or `large-body` selects one executable case.
 `--variant max-name` is compile-only acceptance; `--variant oversize` retains
 both intentional compile-refusal controls. Every focused run is labelled
